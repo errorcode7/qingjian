@@ -85,6 +85,38 @@ ImageMagick；不要把 1024px 源图塞进尺寸目录，也不要只装 `resou
 否则不缩放的托盘会显示巨图（#547）。安装循环片段与图标缓存刷新说明见
 [图标说明](../../assets/icon/README.md#linux-发行版打包)。
 
+`apps/linux/scripts/package-deb.sh` 出两个包，都落位 `/usr`、卸载交 dpkg（不写用户目录安装那份 `install-manifest.json`）：
+
+- `qingjian-<版本>-linux-<发行版>-x86_64.deb`（`qingjian`）：`/usr/bin/` 下两个可执行、`/usr/lib/<multiarch>/fcitx5/qingjian.so`、八档图标、
+  `/usr/share/licenses/` 与 `/usr/share/qingjian/` 下除 `resources/` 外的资源，外加 `postinst`、`conffiles` 与三份会话集成文件——
+  `/etc/environment.d/50-qingjian-im.conf`（`XMODIFIERS` / `QT_IM_MODULE` / `QT_IM_MODULES`）与 `/etc/xdg/autostart/` 下 Fcitx5、青简后端两个 desktop 项。
+- `qingjian-data-<版本>-linux-all.deb`（`qingjian-data`，`Architecture: all`）：词库、两份含章模型与 `/usr/share/qingjian/resources/`，各发行版共用一份。
+
+文件清单不另写一份：与用户目录安装共用 `files.py plan`（输出「目标路径 → 源文件」），两条路径装的文件集合不会漂移，
+`apps/linux/tests/deb.py` 就把包内文件集合与 `plan` 的输出对起来查，任一侧多出或少掉都报错。
+
+本体包的 `Depends` 里 **`fcitx5` 是硬依赖**：`libfcitx5core7` 只是库，不带框架自己的进程与 addon 管理器，只声明库依赖会出现「包装上了却没有任何输入法」。
+库依赖优先交给 `dpkg-shlibdeps`，它顺带把插件对 Fcitx5 的符号版本绑成 `(>= 5.1.x)`，正好对上「插件与构建机版本绑定」这件事；
+拿不到时退回按已装库反查包名（有依赖、没有版本下限）。deb 版本号要把上游的 `-dev` 转成 `~`——`-` 是 deb 的修订号分隔符，
+留着会让 `0.2.2-dev` 排到正式版 `0.2.2` **之后**，正式版反而装不上去（`0.2.2~dev~c97ff2b < 0.2.2`）。
+
+`postinst` 只为一个目的服务：装完就能用。它把青简加进调用者（`SUDO_USER` / `PKEXEC_UID`，两者都拿不到就什么都不做）的
+`~/.config/fcitx5/profile`——列表不存在就整份预置（含 `DefaultIM=qingjian`），已存在就只追加一项、绝不动用户已有的分组与其它输入法。
+它**不改 `Library=`**：系统级 addon 用裸名 `Library=qingjian`，库放 `/usr/lib/<multiarch>/fcitx5/` 由 Fcitx5 自动拼 `.so`；
+写成绝对路径是用户目录安装特有的（那是为了不污染系统 Fcitx5 的搜索规则），见 `files.py` 的 `install()`。
+
+两个包要在**目标发行版自己的环境**里构建，不能拿一个发行版的包往下兼容：插件链接构建机的 Fcitx5，构建最低 API 5.1.8，
+Ubuntu 24.04 自带的 5.1.7 不满足。`package-deb.sh --distro <标识>` 定文件名里的发行版标识，缺省从 `/etc/os-release` 取；
+CI 用容器矩阵逐发行版构建，见[发版流程](release.md#ci-与发布的-workflow)。
+`--arch` 只用来声明并核对构建机的体系结构（对不上直接失败），不做交叉编译；`--version` 是本地验包时覆盖版本号用的。
+
+安装验证分两层，都在 `.github/workflows/package-deb.yml` 里：`build` 跑 `apps/linux/tests/deb.py` 做静态验收
+（落位、权限、图标尺寸、控制区字段、包内文件集合与 `files.py plan` 对账），`install-test` 再开一个**干净的**同发行版容器，
+用 `apps/linux/tests/deb-install.sh` 把两个包真装一遍又卸一遍——验 apt 能不能自己把 `fcitx5` 拉进来、`postinst` 有没有把青简
+写进调用者的输入法列表（列表不存在就整份预置、已存在就只追加一项）、装完的二进制与插件 `ldd` 有没有缺口、`dpkg -V` 有没有漂移、
+`remove` 保留 conffiles 而 `purge` 删掉它们。「干净」是要点：编译依赖已经躺在容器里的话，apt 就不必自己去拉 `fcitx5`，
+依赖声明对不对就验不出来了。这一层只验「装」不验「用」——容器里没有桌面会话，中文上屏、托盘图标、环境变量注入要到真机上验。
+
 ## 验证环境
 
 - Ubuntu 26.04，未打补丁的 Fcitx5 5.1.19-1 / Core7 / modules，GTK4 4.22.4、Qt6 6.10.2。

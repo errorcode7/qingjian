@@ -72,4 +72,21 @@ with tempfile.TemporaryDirectory(prefix='qingjian-install-') as temporary:
                    env=fcitx4_env, check=True)
     assert not fcitx4_addon.exists()
     assert not imicon.exists() and not tray_icon.exists()
-print('用户目录安装、重复安装、注册路径和卸载保留测试通过')
+    # 发行版包按 /usr 落位走的是同一份清单，只有落位根与库目录不同：库目录要换成 multiarch 那份
+    # （发行版把插件装在 /usr/lib/<multiarch>/fcitx5/），其余文件名与用户目录安装完全一致。
+    plan = subprocess.run(
+        ['python3', str(helper), 'plan', '/usr', '--plugin-dir', '/usr/lib/test-libdir',
+         '--data-home', '/usr/share', '--config-home', '/etc', str(root),
+         str(server), str(settings), str(plugin), 'true', 'fcitx5'],
+        capture_output=True, text=True, check=True).stdout
+    packaged = {line.split('\t')[0] for line in plan.splitlines()}
+    assert '/usr/lib/test-libdir/fcitx5/qingjian.so' in packaged
+    assert '/usr/share/fcitx5/addon/qingjian.conf' in packaged
+    assert '/usr/share/fcitx5/inputmethod/qingjian.conf' in packaged
+    assert '/usr/share/applications/qingjian-settings.desktop' in packaged
+    assert '/usr/share/qingjian/resources/assets/sample/dict.tsv' in packaged
+    assert '/usr/share/licenses/qingjian/LICENSE' in packaged
+    for size in (16, 22, 24, 32, 48, 64, 128, 256):
+        assert f'/usr/share/icons/hicolor/{size}x{size}/apps/qingjian.png' in packaged
+    assert not [target for target in packaged if '/.local/' in target or '/.config/' in target]
+print('用户目录安装、重复安装、注册路径、卸载保留与发行版包落位测试通过')

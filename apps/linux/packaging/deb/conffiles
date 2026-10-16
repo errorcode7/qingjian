@@ -1,0 +1,3 @@
+/etc/environment.d/50-qingjian-im.conf
+/etc/xdg/autostart/qingjian-fcitx5.desktop
+/etc/xdg/autostart/qingjian-server.desktop

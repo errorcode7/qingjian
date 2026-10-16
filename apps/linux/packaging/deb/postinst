@@ -1,0 +1,111 @@
+#!/bin/sh
+# //! 装完把青简放进调用者的 Fcitx5 输入法列表，并提示注销重登。
+# //! 只为一个目的服务：装完就能用。已有条目一律不动，缺青简时才追加一项。
+set -e
+
+profile_block() {
+    cat <<'PROFILE'
+[Groups/0]
+# Group Name
+Name=默认
+# Layout
+Default Layout=us
+# Default Input Method
+DefaultIM=qingjian
+
+[Groups/0/Items/0]
+# Name
+Name=keyboard-us
+# Layout
+Layout=
+
+[Groups/0/Items/1]
+# Name
+Name=qingjian
+# Layout
+Layout=
+
+[GroupOrder]
+0=默认
+PROFILE
+}
+
+configure_profile() {
+    user="$1"
+    home="$2"
+    group="$3"
+    profile="$home/.config/fcitx5/profile"
+
+    if [ ! -e "$profile" ]; then
+        install -d -o "$user" -g "$group" "$home/.config/fcitx5"
+        profile_block > "$profile"
+        chown "$user":"$group" "$profile" 2>/dev/null || true
+        chmod 644 "$profile"
+        echo "已为 $user 预置 Fcitx5 输入法列表（含青简）。"
+        return
+    fi
+    # 列表已经存在就只追加，绝不动用户已有的分组、按键与其它输入法。
+    if grep -q '^Name=qingjian$' "$profile"; then
+        return
+    fi
+    temporary="$profile.qingjian-new"
+    awk '
+        /^\[Groups\/0\/Items\/[0-9]+\]/ {
+            number = $0
+            sub(/^\[Groups\/0\/Items\//, "", number)
+            sub(/\]$/, "", number)
+            if (number + 0 > highest) highest = number + 0
+        }
+        /^\[GroupOrder\]/ && !appended {
+            print "[Groups/0/Items/" (highest + 1) "]"
+            print "Name=qingjian"
+            print "Layout="
+            print ""
+            appended = 1
+        }
+        { print }
+    ' "$profile" > "$temporary"
+    if grep -q '^Name=qingjian$' "$temporary"; then
+        chown "$user":"$group" "$temporary" 2>/dev/null || true
+        chmod 644 "$temporary"
+        mv "$temporary" "$profile"
+        echo "已把青简加入 $user 的 Fcitx5 输入法列表。"
+    else
+        rm -f "$temporary"
+        echo "没能在 $user 的 Fcitx5 输入法列表里自动加入青简，请在「Fcitx 5 配置」→ 输入法里手动添加。"
+    fi
+}
+
+if [ "$1" = "configure" ]; then
+    target_user=""
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        target_user="$SUDO_USER"
+    elif [ -n "${PKEXEC_UID:-}" ]; then
+        target_user="$(id -un "$PKEXEC_UID" 2>/dev/null || true)"
+    fi
+
+    if [ -n "$target_user" ]; then
+        home="$(getent passwd "$target_user" | cut -d: -f6)"
+        group="$(id -gn "$target_user" 2>/dev/null || echo "$target_user")"
+        if [ -n "$home" ] && [ -d "$home" ]; then
+            # XDG 里 ~/.local/share 优先于 /usr/share：以前用预编译包装过的话，它那份 addon 配置
+            # 会盖住本包的，而它指向的库可能早就不在了，Fcitx5 会加载失败。
+            if [ -e "$home/.local/share/fcitx5/addon/qingjian.conf" ]; then
+                echo "注意：$home/.local/share/fcitx5/addon/qingjian.conf 会盖住本包的系统级配置。"
+                echo "      那如果是以前用预编译 tar 包装的，请先在解出的目录里执行 ./uninstall.sh。"
+            fi
+            configure_profile "$target_user" "$home" "$group"
+        fi
+    fi
+
+    cat <<'MESSAGE'
+
+青简输入法已安装。下一步：注销并重新登录。
+  输入法环境变量（XMODIFIERS / QT_IM_MODULE）只能在会话启动时注入，Wayland 下无法即时生效。
+  重登后按 Ctrl+Space 切到青简；Fcitx5 与青简后端会随桌面会话自动启动。
+  Fcitx5 已经在跑的话，重登前执行 fcitx5 -r 也能让它读到新装的插件。
+  设置程序在应用菜单里的「青简设置」。
+MESSAGE
+fi
+
+exit 0

@@ -1,6 +1,4 @@
-| `.github/workflows/ci.yml` | push main、PR | `core`（Linux）fmt / clippy / 全 workspace 测试（排除 IMK 壳）；`macos` 编 IMK 壳并跑它的测试；`windows` 编 Server / TSF DLL / Settings 并跑测试。仓库公开，Actions 不计费 |
-| `.github/workflows/audit.yml` | 每周一、Cargo.lock 变动 | `cargo audit`（RustSec 已知漏洞） |
-| `.github/dependabot.yml` | 每周一 | Cargo 依赖与钉 commit 的 actions 的更新 PR |# 发版流程
+# 发版流程
 
 2026-09-07 搭起来的：GitHub Actions 按标签打包、建 Release、生成官网下载页用的 `releases.json`。
 这里记怎么发一版、各环节的依赖，以及官网怎么消费产物。
@@ -29,13 +27,25 @@
 - `prepare`（`ubuntu-26.04`）：门禁（要打的平台版本号都与标签一致、不带 `-dev`、标签在 main 上、配了索引签名密钥）→ 用 CHANGELOG 那一节加各平台未签名提示建**草稿** Release。
 - `macos`（`macos-26`）、`windows`（`windows-latest`）、`linux`（`ubuntu-26.04`）并行：下载产品数据 → 打包 → `tools/release/upload-build.sh` 把安装包和
   这个平台的 `SHA256SUMS-<平台>`、`build-info-<平台>.json` 片段传到草稿上。
-- `publish`：三个平台都成功才跑，`tools/release/finish-release.sh` 把片段合成一份 `SHA256SUMS` 与 `build-info.json`（各平台构建机记在 `platforms` 里）、删掉片段、草稿转正
+- `linux-deb`：复用 `.github/workflows/package-deb.yml`，按 `distros` 列表在各自发行版的容器里各装一遍依赖、各编一次，
+  出对应发行版的 `qingjian-<版本>-linux-<发行版>-x86_64.deb`，再在另一个**干净的**同发行版容器里把包真装一遍又卸掉。
+  装不上、`postinst` 没写对输入法列表、卸载留垃圾，这个 reusable workflow 就失败，`linux-deb-upload` 与 `publish` 都不会跑——
+  装不了的包发不出去。列表里**只放人工在真机上装过的发行版**，现在只有 Ubuntu 26.04：debian-13 / debian-sid 的构建是通的，
+  但还没人验过安装，验过再往列表里加。列表第一个发行版顺带出与体系结构无关的
+  `qingjian-data-<版本>-linux-all.deb`，其余发行版只留标记——同一个 data 包挂多份会让 `SHA256SUMS` 出现同名两条摘要。
+- `linux-deb-upload`：`linux-deb` 之后跑，用 runner 自带的 `gh run download` 取回容器矩阵的产物，逐个发行版调 `tools/release/upload-build.sh` 传包与摘要片段。
+- `publish`：全部平台都成功才跑，`tools/release/finish-release.sh` 把片段合成一份 `SHA256SUMS` 与 `build-info.json`（各平台构建机记在 `platforms` 里，deb 按发行版另占 `linux-<发行版>` 一条）、删掉片段、草稿转正
   → `publish-releases-json.sh` 生成并签名 `releases.json` → `bump-website.sh` 触发官网构建。
   任何平台失败，Release 就停在草稿、用户看不到；修好后删掉草稿与标签重推，或在 Actions 页重跑失败的 job。
 
+`build-info.json` 顶层的 `commit` / `toolchain` / `data_*` 是整次发布的、不分平台：合并时取第一个**非空**的片段，
+不能按文件名排序取第一份——deb 的片段由不下载产品数据的 job（`linux-deb-upload`）传上来，这几个字段是空的。
+
 **单平台补丁**（只修一个平台的急事）：只改那个平台的版本号，打 `macos-v<版本>` / `windows-v<版本>` / `linux-v<版本>`，同一套流程只打那一个平台，Release 标题带平台名。
 
-发版后 GitHub Release 上有：`qingjian-<版本>-macos-arm64.pkg`、`-macos-x86_64.pkg`、`-windows-x86_64-setup.exe`、`-linux-x86_64.tar.gz`、`SHA256SUMS`、`build-info.json`、`releases.json` 与 `.sig`。
+发版后 GitHub Release 上有：`qingjian-<版本>-macos-arm64.pkg`、`-macos-x86_64.pkg`、`-windows-x86_64-setup.exe`、`-linux-x86_64.tar.gz`、
+`qingjian-<版本>-linux-<发行版>-x86_64.deb`（当前只有 Ubuntu 26.04 一份）、`qingjian-data-<版本>-linux-all.deb`、
+`SHA256SUMS`、`build-info.json`、`releases.json` 与 `.sig`。
 
 官网由 Cloudflare Workers Builds 按官网仓库的提交自动构建，没有可调用的构建钩子，所以主仓库靠**往官网仓库推一个小提交**来触发：
 `tools/release/bump-website.sh` 把版本标签与文档提交号写进官网的 `src/content/upstream.json` 并提交推送（提交者 qingjian-ci）。
@@ -54,6 +64,10 @@ Rust 工具链由 `rust-toolchain.toml` 钉版本（现在 1.96.0），两个 wo
 - **Linux**：`apps/linux/scripts/package.sh` 打的包里是编好的 Server、设置程序与 Fcitx5 插件、产品数据压缩包、`install.sh` / `uninstall.sh` / `files.py`，按仓库相对路径放，
   安装与源码安装走同一份清单与校验；打完先装进临时目录冒烟测试（文件齐、校验过、`ldd` 无缺库）再上传。
   插件链接构建机的 Fcitx5（`build-info.json` 的 `platforms.linux.runner` 记了版本），所以只承诺 Ubuntu 26.04，其他发行版走源码安装。
+- **Linux deb**：`apps/linux/scripts/package-deb.sh` 出 `qingjian`（系统级安装、随会话自动启动）与 `qingjian-data`（词库与模型，`Architecture: all`）两个包，
+  文件清单与用户目录安装共用 `files.py plan`；落位、依赖与图标八档由 `apps/linux/tests/deb.py` 验收，也可 `--sample` 跳过正式数据快速跑通链路。
+  因为插件与构建机的 Fcitx5 绑定，deb 只能在**目标发行版自己的环境**里编（非把 Ubuntu 26.04 的包往下兼容）——CI 用容器矩阵，
+  这就是为什么它单独成一个可复用 workflow。细节见 [Fcitx5 适配](linux-fcitx5.md#发行版打包)。
 - **官网**：安装包按文件名识别平台（`ASSET_KINDS`），下载页按访问者平台取「有该平台安装包的最新版本」（`latestFor`）；0.1.3 及更早按平台分开的 Release 照样识别，同版本号合在一条里。
 
 ## 提交前检查与 CI
@@ -67,12 +81,17 @@ cargo 命令全 `--locked`（含 `bundle.sh` 与 `build.ps1`）。普通 CI 只�
 发版门禁（`release.yml` 第一步）：版本号与标签一致且不带 `-dev`；标签指向的提交必须在 `main` 上（`git merge-base --is-ancestor`）；产品数据下载后按 `data` Release 的 `SHA256SUMS` 校验，摘要写进 `build-info.json` 的 `data_sha256`。
 **正式版前还欠**：产品数据改成不可变 tag 并在仓库里锁定版本（现在滚动覆盖，同一源码 tag 重跑可能拿到不同数据）、安装包内容验证（词库 / 模型 / 许可齐不齐、签名校验）。
 
-## 两个 workflow
+## CI 与发布的 workflow
 
 | 文件 | 触发 | 做什么 |
 |---|---|---|
-| `.github/workflows/ci.yml` | push main、PR | Linux 上 `cargo fmt --check` / clippy / test，排除 `qingjian-macos`（IMK 外壳只能在 macOS 编译，macOS runner 计费是 Linux 的 10 倍） |
-| `.github/workflows/release.yml` | 推 `v*`（三个平台）或 `macos-v*` / `windows-v*` / `linux-v*`（单平台）标签 | `prepare` 门禁并建草稿 Release → `macos` / `windows` / `linux` 并行打包上传 → `publish` 合并摘要、转正、生成 `releases.json`、触发官网构建（见上文） |
+| `.github/workflows/ci.yml` | push main、PR | Linux 上 `cargo fmt --check` / clippy / test，排除 `qingjian-macos`（IMK 外壳只能在 macOS 编译，macOS runner 计费是 Linux 的 10 倍）；顺带 `bash -n` / `sh -n` 校验 Linux 安装与打包脚本的语法 |
+| `.github/workflows/release.yml` | 推 `v*`（三个平台）或 `macos-v*` / `windows-v*` / `linux-v*`（单平台）标签 | `prepare` 门禁并建草稿 Release → `macos` / `windows` / `linux` 并行打包上传 → `linux-deb` 在容器矩阵里打发行版 deb → `linux-deb-upload` 取回并上传 → `publish` 合并摘要、转正、生成 `releases.json`、触发官网构建（见上文） |
+| `.github/workflows/package-deb.yml` | `release.yml` 调用，或手动 `workflow_dispatch`（填 `distros`，缺省只有已验证的 `ubuntu-26.04`） | 只做 deb：`build` 在容器矩阵里逐发行版构建并跑 `apps/linux/tests/deb.py` 静态验收，`install-test` 再开一个干净的同发行版容器用 `apps/linux/tests/deb-install.sh` 真装一遍又卸掉（解依赖、`postinst` 效果、`ldd`、卸载与 purge），两关都过才算这个发行版通了。手动触发用来在发版前单独验打包（认未验证的 `debian-13` / `debian-sid` 也走这里），产物在本次 run 的 Artifacts 里 |
+
+手动跑一次 deb 打包（不改版本号、不发 Release）：在 Actions 页选 **package deb** → Run workflow。`distros` 留空只打 Ubuntu 26.04；
+要试别的发行版就把 `distros` 填成 `debian-13` 或 `debian-sid,ubuntu-26.04`（逗号分隔，可选项在 workflow 的 `plan` job 里）。
+构建、静态验收与真装验证都会跑，要看包就去本次 run 的 Artifacts 里下。
 
 ## 产品数据从哪来
 
@@ -134,10 +153,11 @@ Apple Developer 账号有了以后，在仓库 Secrets 里配齐 `release.yml` �
       "built_at": "2026-09-07T08:38:12Z",
       "toolchain": "rustc 1.96.0 (ac68faa20 2026-05-25)",
       "assets": [
-        { "platform": "macos", "arch": "Apple Silicon", "cpu": "arm64", "file": "qingjian-0.1.3-macos-arm64.pkg",
+        { "platform": "macos", "arch": "Apple Silicon", "cpu": "arm64", "distro": "", "file": "qingjian-0.1.3-macos-arm64.pkg",
           "url": "https://github.com/owner/qingjian/releases/download/macos-v0.1.3/qingjian-0.1.3-macos-arm64.pkg",
           "size": 35989277, "sha256": "…" },
-        { "platform": "macos", "arch": "Intel", "cpu": "x86_64", "file": "qingjian-0.1.3-macos-x86_64.pkg", "url": "…", "size": 36172871, "sha256": "…" }
+        { "platform": "linux", "arch": "x64", "cpu": "x86_64", "distro": "ubuntu-26.04", "file": "qingjian-0.1.3-linux-ubuntu-26.04-x86_64.deb", "url": "…", "size": 104857600, "sha256": "…" },
+        { "platform": "linux", "arch": "通用", "cpu": "all", "distro": "", "file": "qingjian-data-0.1.3-linux-all.deb", "url": "…", "size": 94371840, "sha256": "…" }
       ]
     }
   ]
@@ -149,6 +169,10 @@ Apple Developer 账号有了以后，在仓库 Secrets 里配齐 `release.yml` �
 - 安装包文件名固定为 `qingjian-<版本>-<平台>-<cpu>[-setup].<扩展名>`（全小写；平台 `macos` / `windows` / `linux`，cpu `arm64` / `x86_64`，2026-09-17 定，
   包管理器的地址模板与检查更新都靠它稳定）。平台与架构由文件名判定（`ASSET_KINDS`，同时认 0.1.2 及更早的 `Qingjian-<版本>-arm64.pkg` / `-Setup.exe` 旧名），
   `arch` 给人看（Apple Silicon / Intel / x64），`cpu` 给程序比对。
+- `distro` 只有 Linux deb 用得上：本体包一个发行版一份，发行版标识写在文件名里、拆进这个字段（`qingjian-0.1.3-linux-ubuntu-26.04-x86_64.deb`），
+  其余平台与旧的 tar.gz 是空串。官网要按访问者的发行版挑包——插件与构建机的 Fcitx5 绑定，装错发行版起不来。
+- 与体系结构无关的 `qingjian-data` 是 `cpu: "all"` 的另一条（`arch` 显示「通用」），官网必须把它跟本体包一起给出下载入口，
+  否则用户 apt 解不开 `qingjian-data (= <版本>)` 这个依赖。
 - `schema_version` 现在是 1：只加字段不用动，改了已有字段的含义或结构才加一。
 - `mirrors` 来自 CHANGELOG 那一节的「网盘：」行，没有就是空数组；官网在下载按钮旁单独显示。
 - `SHA256SUMS` 与 `releases.json` 自己不列进 `assets`。

@@ -12,10 +12,13 @@ OUT="$3"
 mkdir -p "$OUT"
 gh release download "$TAG" --pattern 'SHA256SUMS-*' --pattern 'build-info-*.json' --dir "$OUT" --clobber
 cat "$OUT"/SHA256SUMS-* | sort -k2 | tee "$OUT/SHA256SUMS"
+# 顶层这几个字段是整次发布的、不分平台，谁有值取谁的：deb 的片段由不下载产品数据的 job 传上来
+# （只上传容器矩阵的产物），按文件名排序还可能排在前面，不能直接取 .[0]。
 jq -s --arg version "$VERSION" --arg tag "$TAG" \
-  '{version: $version, tag: $tag, commit: .[0].commit, built_at: (map(.built_at) | max), toolchain: .[0].toolchain,
-    data_tag: .[0].data_tag, data_sha256: .[0].data_sha256, model_sha256: .[0].model_sha256,
-    p2c_model_sha256: .[0].p2c_model_sha256,
+  'def first_nonempty(field): ([.[] | field | select(. != "")] + [""]) | first;
+   {version: $version, tag: $tag, commit: first_nonempty(.commit), built_at: (map(.built_at) | max), toolchain: first_nonempty(.toolchain),
+    data_tag: first_nonempty(.data_tag), data_sha256: first_nonempty(.data_sha256), model_sha256: first_nonempty(.model_sha256),
+    p2c_model_sha256: first_nonempty(.p2c_model_sha256),
     platforms: (map({(.platform): {built_at, runner}}) | add)}' \
   "$OUT"/build-info-*.json | tee "$OUT/build-info.json"
 gh release upload "$TAG" "$OUT/SHA256SUMS" "$OUT/build-info.json" --clobber

@@ -67,7 +67,7 @@ jobs:
           env -u DBUS_SESSION_BUS_ADDRESS ctest --test-dir target/fcitx5-stage1 --output-on-failure 2>&1 | tee target/ci-logs/fcitx5-ctest.log
 
       - name: Validate Linux install scripts
-        run: bash -n apps/linux/scripts/install.sh apps/linux/scripts/uninstall.sh apps/linux/scripts/package.sh apps/linux/scripts/package-install.sh
+        run: bash -n apps/linux/scripts/install.sh apps/linux/scripts/uninstall.sh apps/linux/scripts/package.sh apps/linux/scripts/package-install.sh apps/linux/scripts/package-deb.sh apps/linux/tests/deb-install.sh && sh -n apps/linux/packaging/deb/postinst
 
       - name: Test Linux installation
         shell: bash

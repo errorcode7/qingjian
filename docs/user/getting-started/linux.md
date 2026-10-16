@@ -4,9 +4,9 @@ order: 6
 description: 在 Linux 上安装青简，使用 Fcitx4 或 Fcitx5 默认候选面板。
 ---
 
-青简 Linux 使用系统默认候选面板。Fcitx5 提供 Ubuntu 26.04 预编译包和源码安装；Fcitx4 提供 Ubuntu 22.04 源码安装。
+青简 Linux 使用系统默认候选面板。Fcitx5 提供 deb（Ubuntu 26.04、Debian 13 与 Debian sid）、Ubuntu 26.04 的预编译包，以及源码安装；Fcitx4 提供 Ubuntu 22.04 源码安装。
 Fcitx5 已验证 Ubuntu 26.04 的 GNOME 桌面（Wayland）上 GTK4、Qt6 应用与 Firefox；Fcitx4 已验证 Ubuntu 22.04 的 GTK3 文本框输入，以及 X11 下 Chrome 输入框的选中文字翻译与替换。
-当前支持本地候选、学习、本地整句模型重排和可选云联想，提供青简设置程序，暂不自动启动。
+当前支持本地候选、学习、本地整句模型重排和可选云联想，提供青简设置程序。deb 装在系统目录并随桌面会话自动启动；预编译包与源码包装在用户目录，要自己启动服务。
 
 ## Ubuntu 22.04：Fcitx4 源码安装
 
@@ -36,9 +36,34 @@ Fcitx4 提供密码框标记，但不提供 Fcitx5 的一般敏感输入标记�
 需要避免保存输入记录时，可在 `~/.config/qingjian/config.toml` 中设置 `[general] input_log = false` 和 `learning = false`，修改后重启服务。
 Fcitx4 的 Chrome 输入框可读取 X11 中当前应用的选中文字；部分应用可能不提供可读取的选区。Qt5 应用和其他桌面环境尚未做真机验证。
 
+## Ubuntu 26.04 / Debian：deb 安装
+
+deb 装到系统目录，并把 Fcitx5 与青简后端接进桌面会话；装完注销重登一次就能用，不用自己启动服务。
+
+在[下载页](https://qingjian.app/download)按自己的发行版下载两个包：`qingjian-<版本>-linux-<发行版>-x86_64.deb` 与
+`qingjian-data-<版本>-linux-all.deb`（词库与本地整句模型，各发行版共用一份）。两个包要一起装，否则 `qingjian-data` 这个依赖解不开：
+
+```sh
+sudo apt install ./qingjian-<版本>-linux-ubuntu-26.04-x86_64.deb ./qingjian-data-<版本>-linux-all.deb
+```
+
+现在只提供 Ubuntu 26.04（x86_64）：插件与构建机上的 Fcitx5 版本绑定，装错发行版的那份，青简不会出现在输入法列表里。
+其他发行版还没在真机上验过，请用下面的源码安装。apt 会连带装上 Fcitx5 和框架依赖。
+
+装完**注销并重新登录**：输入法环境变量（`XMODIFIERS`、`QT_IM_MODULE`）只能在会话启动时注入，Wayland 下无法即时生效。
+重登后 Fcitx5 与青简后端随会话自动启动，按 `Ctrl+Space` 唤出 Fcitx5 并切到青简，输入 `nihao` 按空格上屏「你好」。
+重登前想先试，执行 `fcitx5 -r` 让正在运行的 Fcitx5 读到新装的插件；设置程序在应用菜单里的「青简设置」。
+
+以前用下面的预编译包装过的话，它那份 `~/.local/share/fcitx5/addon/qingjian.conf` 会盖住系统级的，装 deb 时会有提示；
+先在原来解出的目录里执行 `./uninstall.sh`，再装 deb。
+
+更新与首次安装相同，重复执行那条 `apt install`。卸载用 `sudo apt remove qingjian qingjian-data`；
+配置、个人词库和学习数据都在用户目录，卸载不会删。
+
 ## Fcitx5 预编译包
 
-预编译包在 Ubuntu 26.04（x86_64）上构建，插件与系统的 Fcitx5 版本绑定；其他发行版请用下一节的源码安装。
+预编译包在 Ubuntu 26.04（x86_64）上构建，插件与系统的 Fcitx5 版本绑定。Ubuntu 26.04 与 Debian 更推荐上面的 deb（会把会话一起配好）；
+其他发行版请用下一节的源码安装。
 先装好 Fcitx5 与 GTK / Qt 输入支持：
 
 ```sh
@@ -153,6 +178,7 @@ Fcitx5 声明为私密的输入框和密码框不会发云请求；Fcitx4 只能
 ## 更新和卸载
 
 结束手动启动的青简服务，重复执行对应的安装命令，然后重启正在使用的 Fcitx 和青简服务。安装会检查文件归属；目标文件被手动修改时会提示保留，请先备份处理。
+用 deb 装的走 apt（重复 `apt install` 更新、`sudo apt remove qingjian qingjian-data` 卸载），不用下面的 `uninstall.sh`——它只清理用户目录安装。
 
 ```sh
 apps/linux/scripts/uninstall.sh

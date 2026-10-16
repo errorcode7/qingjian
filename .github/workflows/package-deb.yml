@@ -1,0 +1,152 @@
+name: package-deb
+
+# 发行版包（deb）构建。release.yml 发版时按 workflow_call 调用，也能在 Actions 页手动触发；
+# 手动触发只出产物与验收结果，不碰 Release，改打包脚本时不用发标签就能验一遍。
+# 两个 job：build 在容器里构建并做静态验收（apps/linux/tests/deb.py），install-test 再开一个**干净的**
+# 同发行版容器把 deb 真装一遍（apt 自己解依赖、postinst 写没写输入法列表、ldd 齐不齐、卸载干不干净），
+# 装不上就别想发出去。
+# 必须在目标发行版自己的容器里构建：Fcitx5 插件链接的是构建机的 Fcitx5，跨发行版不通用，
+# dpkg-shlibdeps 会顺手把这份绑定写成 Depends；构建最低 API 是 5.1.8，Ubuntu 24.04 自带的
+# 5.1.7 不满足，所以不在列表里。
+# 列表里第一个发行版顺带产出 qingjian-data（与体系结构无关，各发行版内容相同，挂一份就够）。
+# 默认只出人工验证过的 Ubuntu 26.04：debian-13 / debian-sid 的容器构建是通的，但装到真机还没人验过。
+# 要挂到 Release 上，先手动触发本 workflow 构建出来、在真机上装过，再加进 release.yml 的列表。
+on:
+  workflow_call:
+    inputs:
+      distros:
+        type: string
+        default: ubuntu-26.04
+      sample:
+        description: 只带样例词库（发版时不要开）
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      distros:
+        description: 要构建的发行版，逗号分隔（已验证 ubuntu-26.04；待验证 debian-13 / debian-sid）
+        type: string
+        default: ubuntu-26.04
+      sample:
+        description: 只带样例词库，不下载 90 MB 产品数据
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-26.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.value }}
+      carrier: ${{ steps.matrix.outputs.carrier }}
+    steps:
+      - id: matrix
+        env:
+          DISTROS: ${{ inputs.distros }}
+        run: |
+          include='[]'
+          carrier=''
+          for distro in ${DISTROS//,/ }; do
+            case "$distro" in
+              ubuntu-26.04) image=ubuntu:26.04 ;;
+              debian-13) image=debian:13 ;;
+              debian-sid) image=debian:sid ;;
+              *) echo "不支持的发行版：$distro" >&2; exit 1 ;;
+            esac
+            include=$(jq -c --arg distro "$distro" --arg image "$image" '. + [{distro: $distro, image: $image}]' <<< "$include")
+            [[ -n "$carrier" ]] || carrier=$distro
+          done
+          [[ -n "$carrier" ]] || { echo '至少要给一个发行版' >&2; exit 1; }
+          echo "value={\"include\":$include}" >> "$GITHUB_OUTPUT"
+          echo "carrier=$carrier" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    # 容器里没有 sudo（本来就是 root），而且要先装 git 才 checkout 得动。
+    container:
+      image: ${{ matrix.image }}
+    timeout-minutes: 60
+    steps:
+      - name: Install git and apt prerequisites
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git xz-utils zstd
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: 1.96.0
+
+      # 缓存按发行版分开：几个发行版共用一份 target/ 会拿到别的 libc 与别的 Fcitx5 编出来的产物。
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.distro }}
+
+      - name: Install build and packaging dependencies
+        run: |
+          apt-get install -y --no-install-recommends \
+            dpkg-dev python3 cmake g++ pkg-config libssl-dev nlohmann-json3-dev \
+            libfcitx5core-dev libfcitx5config-dev libfcitx5utils-dev fcitx5
+
+      - name: Fetch product data
+        if: ${{ !inputs.sample }}
+        run: |
+          tools/release/data-fetch.sh
+          ls -la data/generated data/models/hanzhang-zhiwei data/models/hanzhang-tongbian
+
+      - name: Build deb
+        run: apps/linux/scripts/package-deb.sh --distro ${{ matrix.distro }} ${{ inputs.sample && '--sample' || '' }}
+
+      - name: Verify deb
+        run: python3 apps/linux/tests/deb.py target/deb/out ${{ inputs.sample && '--sample' || '' }}
+
+      - name: Record build machine
+        run: |
+          . /etc/os-release
+          printf '%s, Fcitx5 %s\n' "$PRETTY_NAME" "$(pkg-config --modversion Fcitx5Core)" > target/deb/out/build-machine.txt
+          cat target/deb/out/build-machine.txt
+          if [[ "${{ matrix.distro }}" == "${{ needs.plan.outputs.carrier }}" ]]; then
+            touch target/deb/out/ships-data
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deb-${{ matrix.distro }}
+          path: target/deb/out/
+          if-no-files-found: error
+
+  # 换一个干净容器把 deb 真装一遍。这里故意不装任何编译依赖：只有让 apt 自己去拉 fcitx5，
+  # 「Depends 写对了没有」才有意义——build 那个容器里 fcitx5 与 -dev 包早就装上了。
+  install-test:
+    needs: [plan, build]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    container:
+      image: ${{ matrix.image }}
+    timeout-minutes: 30
+    steps:
+      - name: Install apt prerequisites
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: deb-${{ matrix.distro }}
+          path: target/deb/out
+
+      - name: Install and verify
+        run: apps/linux/tests/deb-install.sh target/deb/out ${{ inputs.sample && '--sample' || '' }}

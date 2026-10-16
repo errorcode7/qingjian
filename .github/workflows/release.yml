@@ -100,7 +100,7 @@ jobs:
             printf '\n> Windows：这一版没有代码签名：安装时 SmartScreen 拦截请点「更多信息 → 仍要运行」；任务栏搜索、「设置」等系统应用里候选窗口可能被遮挡。\n' >> "$NOTES"
           fi
           if [[ "$LINUX" == "true" ]]; then
-            printf '\n> Linux：预编译包在 Ubuntu 26.04 上构建，其他发行版请用源码安装；解开后运行 install.sh，说明见官网文档「Linux」。\n' >> "$NOTES"
+            printf '\n> Linux：tar 包与 deb 都在 Ubuntu 26.04 上构建（Fcitx5 插件与构建机上的 Fcitx5 版本绑定，其他发行版请用 tar 包源码安装）；deb 要跟 qingjian-data 一起交给 apt，说明见官网文档「Linux」。\n' >> "$NOTES"
           fi
           case "$GITHUB_REF_NAME" in
             macos-v*) TITLE="青简 macOS $VERSION" ;;
@@ -308,8 +308,54 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: tools/release/upload-build.sh linux "$(. /etc/os-release && echo "$PRETTY_NAME"), Fcitx5 $(pkg-config --modversion Fcitx5Core)" target/linux-package/*.tar.gz
 
+  linux-deb:
+    needs: prepare
+    if: needs.prepare.outputs.linux == 'true'
+    # 发行版包在目标发行版自己的容器里构建，job 定义在 package-deb.yml（手动触发同一个 workflow）。
+    # 列表第一个发行版顺带产出 qingjian-data。
+    # 只放人工在真机上装过的发行版：debian-13 / debian-sid 的构建是通的，验过再往这里加（逗号分隔）。
+    uses: ./.github/workflows/package-deb.yml
+    with:
+      distros: ubuntu-26.04
+
+  linux-deb-upload:
+    needs: [prepare, linux-deb]
+    # 草稿 Release 只在这个 job 里写：容器里不装 gh 与 jq，上传逻辑留在普通 runner 上。
+    if: needs.prepare.outputs.linux == 'true'
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+      # 写下 permissions 会把没列的 scope 置成 none，取本次运行的产物要 actions: read。
+      actions: read
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # 用 runner 自带的 gh 取本次运行的产物，不再多引一个 action（也要多钉一个 commit）。
+      # 每个产物落在 target/deb/deb-<发行版>/ 下。
+      - name: Download deb artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --pattern 'deb-*' --dir target/deb
+
+      - name: Upload each distribution to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for directory in target/deb/deb-*/; do
+            distro="$(basename "${directory%/}")"
+            distro="${distro#deb-}"
+            files=("${directory}qingjian-$VERSION-linux-$distro-"*.deb)
+            # 词库与模型各发行版内容相同，只挂一份，避免 SHA256SUMS 里同名文件出现两个摘要。
+            [[ -e "${directory}ships-data" ]] && files+=("${directory}qingjian-data-"*.deb)
+            tools/release/upload-build.sh "linux-$distro" "$(cat "${directory}build-machine.txt")" "${files[@]}"
+          done
+
   publish:
-    needs: [prepare, macos, windows, linux]
+    needs: [prepare, macos, windows, linux, linux-deb-upload]
     # 没选中的平台是 skipped，照样发；有平台失败就停在草稿
     if: ${{ !cancelled() && needs.prepare.result == 'success' && !contains(needs.*.result, 'failure') }}
     runs-on: ubuntu-26.04

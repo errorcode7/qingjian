@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Fcitx5
+GenericName=Input Method
+Comment=启动 Fcitx5 输入法框架（青简引擎运行于其中）
+Comment[en]=Start the Fcitx5 input method framework
+Exec=/usr/bin/fcitx5 -d --replace
+Icon=fcitx
+Terminal=false
+Categories=System;Utility;
+NoDisplay=true
+# 不要加 X-GNOME-Autostart-Phase 或 X-GNOME-Autostart-Delay：GNOME 46 起不再支持，
+# 带上会被静默跳过（docs/notes/linux-fcitx5.md 的「发行版打包」）。

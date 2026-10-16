@@ -19,6 +19,9 @@ CHANGELOG.md 的格式（一个版本一节，日期与发布渠道写在标题�
 渠道只能是 alpha / beta / rc / stable，是**更新渠道**：定期发的版本标 stable，中间放给测试者的版本标 alpha / beta / rc，
 版本号带对应的预发布后缀（`0.1.4-beta.1`）。api-json 是 `gh api repos/<repo>/releases --paginate` 的输出（数组）。
 只取 tag 形如 [平台-]v<版本> 的非草稿发布（平台前缀可选：macos- / windows- / linux-，各平台壳版本号独立），安装包按文件名识别平台与架构，其他附件（SHA256SUMS、build-info.json、releases.json 本身）不列。
+Linux 的 deb 每个发行版一份，发行版标识写在 distro 里（`qingjian-<版本>-linux-ubuntu-26.04-x86_64.deb`），
+与体系结构无关的数据包是 cpu=`all` 的另一条（`qingjian-data-<版本>-linux-all.deb`）——官网下载页要把它跟本体包一起给出，
+否则 `apt install` 解不开 qingjian-data 这个依赖。
 meta-dir 下每个 tag 一个目录，放那次发布的 SHA256SUMS（每个包的 sha256）与 build-info.json（提交哈希、构建时间、工具链），
 没有就对应字段留空。输出结构与官网 src/lib/releases.ts 的 Release / Asset 类型对应：
 
@@ -33,7 +36,7 @@ meta-dir 下每个 tag 一个目录，放那次发布的 SHA256SUMS（每个包�
         "mirrors": [{"name": "夸克网盘", "url": "https://pan.quark.cn/s/…"}],
         "commit": "869ad00…（40 位）", "built_at": "2026-09-07T08:38:12Z", "toolchain": "rustc 1.96.0 (…)",
         "assets": [
-          {"platform": "macos", "arch": "Apple Silicon", "cpu": "arm64", "file": "qingjian-0.1.3-macos-arm64.pkg",
+          {"platform": "macos", "arch": "Apple Silicon", "cpu": "arm64", "distro": "", "file": "qingjian-0.1.3-macos-arm64.pkg",
            "url": "https://github.com/…/releases/download/macos-v0.1.3/qingjian-0.1.3-macos-arm64.pkg", "size": 123456, "sha256": "…"}
         ]
       }
@@ -65,6 +68,12 @@ ASSET_KINDS = [
     (re.compile(r"^qingjian-.+-macos-x86_64\.pkg$"), "macos", "Intel", "x86_64"),
     (re.compile(r"^qingjian-.+-windows-x86_64-setup\.exe$"), "windows", "x64", "x86_64"),
     (re.compile(r"^qingjian-.+-linux-x86_64\.tar\.gz$"), "linux", "x64", "x86_64"),
+    # 发行版包：Fcitx5 插件与构建机绑定，一个发行版一份，文件名里带发行版标识
+    # （qingjian-<版本>-linux-ubuntu-26.04-x86_64.deb），distro 单独输出给官网挑版本用。
+    (re.compile(r"^qingjian-.+-linux-(?P<distro>[a-z][a-z0-9.-]*)-x86_64\.deb$"), "linux", "x64", "x86_64"),
+    # 数据包（词库、本地整句模型与程序资源）：与体系结构无关，各发行版共用一份，
+    # 官网要跟本体包一起给出下载入口，否则 apt 解不开依赖。
+    (re.compile(r"^qingjian-data-.+-linux-all\.deb$"), "linux", "通用", "all"),
     (re.compile(r"^Qingjian-.+-arm64\.pkg$"), "macos", "Apple Silicon", "arm64"),
     (re.compile(r"^Qingjian-.+-x86_64\.pkg$"), "macos", "Intel", "x86_64"),
     (re.compile(r"^Qingjian-.+-Setup\.exe$"), "windows", "x64", "x86_64"),
@@ -102,10 +111,12 @@ def semver_key(version: str) -> tuple:
     return (*nums, 0 if pre else 1, pre)
 
 
-def classify(name: str) -> tuple[str, str, str] | None:
+def classify(name: str) -> tuple[str, str, str, str] | None:
+    """→（平台、架构说明、CPU、发行版标识）；发行版标识只有 deb 有，其余是空串。"""
     for pattern, platform, arch, cpu in ASSET_KINDS:
-        if pattern.match(name):
-            return platform, arch, cpu
+        match = pattern.match(name)
+        if match:
+            return platform, arch, cpu, (match.groupdict().get("distro") or "")
     return None
 
 
@@ -162,6 +173,7 @@ def build(changelog: dict[str, dict], api: list[dict], repo: str, meta_dir: Path
                 "platform": kind[0],
                 "arch": kind[1],
                 "cpu": kind[2],
+                "distro": kind[3],
                 "file": asset["name"],
                 "url": asset["browser_download_url"],
                 "size": asset.get("size", 0),

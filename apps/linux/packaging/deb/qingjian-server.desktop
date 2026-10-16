@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Qingjian Server
+Comment=青简后端服务（Fcitx5 插件通过 $XDG_RUNTIME_DIR/qingjian.sock 与它通信）
+Comment[en]=Qingjian input method backend
+Exec=/usr/bin/qingjian-linux-server
+Terminal=false
+NoDisplay=true
