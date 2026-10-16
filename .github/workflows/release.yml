@@ -1,4 +1,5 @@
-# 推 v<版本> 标签发三个平台（共用一个 GitHub Release）；单平台补丁推 macos-v / windows-v / linux-v<版本>，只打那一个平台。
+# 发版：在 Actions 页手动选 release → Run workflow，填要发的标签。v<版本> 发三个平台（共用一个 GitHub Release）；
+# macos-v / windows-v / linux-v<版本> 只打那一个平台。调试期不随标签推送自动跑，见下面 on 一节的说明。
 # 版本号读各平台壳：macOS apps/macos/Cargo.toml、Windows apps/windows/server/Cargo.toml、Linux apps/linux/server/Cargo.toml，要打的平台都得与标签一致。
 # 流程：prepare 核对版本、建草稿 Release → 各平台 job 并行打包，把安装包与摘要 / 构建信息片段传到草稿上
 # → publish 合并片段、转正、生成并签名 releases.json、触发官网构建。任何平台失败都停在草稿，不会发出缺平台的版本。
@@ -23,9 +24,19 @@
 # actions 钉到 commit（注释是对应标签），Dependabot 每周更新；产品数据与本地整句模型按 tools/release/data.lock 钉住的 data-vN Release 下载、按锁文件里的哈希校验，标签与哈希记进 build-info.json。
 name: release
 
+# 调试期改成只手动触发：推标签不再自动发版，也不会连带自动调 deb 的 package-deb.yml。
+# 用法：先在要发的提交上打好标签并推上去（推标签现在什么都不触发），再到 Actions 页 Run workflow 填这个标签。
+# 下面各平台 job 检出的是标签指向的那个提交（不是 main 顶端），prepare 里的 HEAD 就是它。
+# 恢复上游的标签触发：把这一节换回
+#   push:
+#     tags: ['v*', 'macos-v*', 'windows-v*', 'linux-v*']
 on:
-  push:
-    tags: ['v*', 'macos-v*', 'windows-v*', 'linux-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 要发的标签，形如 v0.2.2 或 linux-v0.2.2（必须已推到远程，且指向 main 上的提交）
+        type: string
+        required: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,34 +47,54 @@ jobs:
     permissions:
       contents: write
     outputs:
+      tag: ${{ steps.gate.outputs.tag }}
       version: ${{ steps.gate.outputs.version }}
       macos: ${{ steps.gate.outputs.macos }}
       windows: ${{ steps.gate.outputs.windows }}
       linux: ${{ steps.gate.outputs.linux }}
     steps:
+      # 标签得先在远程存在，checkout 才检得出它。手动触发没有「推标签」这个前置动作，所以先查一次给出人话提示。
+      - name: Check tag exists
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -z "$TAG" ]]; then
+            echo "tag 输入是空的：填形如 v0.2.2 或 linux-v0.2.2 的标签" >&2
+            exit 1
+          fi
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "远程没有标签 $TAG：先在要发的提交上 git tag $TAG，再 git push origin $TAG。" >&2
+            echo "推标签不会触发本 workflow，推完回 Actions 页手动 Run workflow。" >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Check versions match tag and tag is on main
         id: gate
         env:
+          TAG: ${{ inputs.tag }}
           INDEX_KEY_SET: ${{ secrets.QINGJIAN_INDEX_SIGNING_KEY != '' }}
         run: |
           if [[ "$INDEX_KEY_SET" != "true" ]]; then
             echo "没配 QINGJIAN_INDEX_SIGNING_KEY：releases.json 签不了名，已装的青简都不认这份索引、收不到更新提示（docs/notes/release.md）" >&2
             exit 1
           fi
-          case "$GITHUB_REF_NAME" in
-            v*) PLATFORMS="macos windows linux"; VERSION="${GITHUB_REF_NAME#v}" ;;
-            *-v*) PLATFORMS="${GITHUB_REF_NAME%%-v*}"; VERSION="${GITHUB_REF_NAME#*-v}" ;;
+          case "$TAG" in
+            v*) PLATFORMS="macos windows linux"; VERSION="${TAG#v}" ;;
+            *-v*) PLATFORMS="${TAG%%-v*}"; VERSION="${TAG#*-v}" ;;
+            *) echo "标签 $TAG 不认得：要形如 v0.2.2，或单平台的 macos-v0.2.2 / windows-v0.2.2 / linux-v0.2.2" >&2; exit 1 ;;
           esac
           declare -A MANIFEST=([macos]=apps/macos/Cargo.toml [windows]=apps/windows/server/Cargo.toml [linux]=apps/linux/server/Cargo.toml)
           for platform in $PLATFORMS; do
             found="$(sed -n 's/^version = "\(.*\)"/\1/p' "${MANIFEST[$platform]}" | head -1)"
             if [[ "$found" != "$VERSION" ]]; then
-              echo "${MANIFEST[$platform]} 是 $found，标签是 $GITHUB_REF_NAME，先改版本号再打标签" >&2
+              echo "${MANIFEST[$platform]} 是 $found，标签是 $TAG，先改版本号再打标签" >&2
               exit 1
             fi
           done
@@ -71,11 +102,14 @@ jobs:
             echo "$VERSION 还是开发版号，发版提交要先去掉 -dev（docs/notes/release.md）" >&2
             exit 1
           fi
+          # 上面已经把这个标签检出到工作区，HEAD 就是它指向的提交（手动触发时 GITHUB_SHA 是分支顶端，不能用）。
           git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "标签 $GITHUB_REF_NAME 指向的提交 $GITHUB_SHA 不在 main 上，先合并再发" >&2
+          tag_sha="$(git rev-parse HEAD)"
+          if ! git merge-base --is-ancestor "$tag_sha" origin/main; then
+            echo "标签 $TAG 指向的提交 $tag_sha 不在 main 上，先合并再发" >&2
             exit 1
           fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           for platform in macos windows linux; do
             [[ " $PLATFORMS " == *" $platform "* ]] && on=true || on=false
@@ -85,6 +119,7 @@ jobs:
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.gate.outputs.tag }}
           VERSION: ${{ steps.gate.outputs.version }}
           MACOS: ${{ steps.gate.outputs.macos }}
           WINDOWS: ${{ steps.gate.outputs.windows }}
@@ -102,7 +137,7 @@ jobs:
           if [[ "$LINUX" == "true" ]]; then
             printf '\n> Linux：tar 包与 deb 都在 Ubuntu 26.04 上构建（Fcitx5 插件与构建机上的 Fcitx5 版本绑定，其他发行版请用 tar 包源码安装）；deb 要跟 qingjian-data 一起交给 apt，说明见官网文档「Linux」。\n' >> "$NOTES"
           fi
-          case "$GITHUB_REF_NAME" in
+          case "$TAG" in
             macos-v*) TITLE="青简 macOS $VERSION" ;;
             windows-v*) TITLE="青简 Windows $VERSION" ;;
             linux-v*) TITLE="青简 Linux $VERSION" ;;
@@ -110,7 +145,7 @@ jobs:
           esac
           # 带预发布后缀的版本（0.1.4-beta.1）是测试渠道的：标成预发布，不抢 GitHub 的 latest
           PRERELEASE=(); [[ "$VERSION" == *-* ]] && PRERELEASE=(--prerelease --latest=false)
-          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$TITLE" --notes-file "$NOTES" ${PRERELEASE[@]+"${PRERELEASE[@]}"}
+          gh release create "$TAG" --draft --verify-tag --title "$TITLE" --notes-file "$NOTES" ${PRERELEASE[@]+"${PRERELEASE[@]}"}
 
   macos:
     needs: prepare
@@ -120,10 +155,12 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # bundle.sh 用提交数当构建号
+          # 检出标签指向的提交（手动触发时默认会检出 main 顶端）；bundle.sh 用提交数当构建号
+          ref: ${{ needs.prepare.outputs.tag }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -204,6 +241,7 @@ jobs:
         shell: bash
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
       # 没有代码签名证书：Server 不带 uiAccess（没签名的 exe 带 uiAccess=true 起不来；build.rs 缺省也不带，build.ps1 还会按 -Sign 重设）。证书办下来后在 build.ps1 加 signtool、走 -Sign。
       QINGJIAN_UIACCESS: '0'
       PYTHON: python
@@ -212,6 +250,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.prepare.outputs.tag }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -262,9 +301,11 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.prepare.outputs.tag }}
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
@@ -311,12 +352,14 @@ jobs:
   linux-deb:
     needs: prepare
     if: needs.prepare.outputs.linux == 'true'
-    # 发行版包在目标发行版自己的容器里构建，job 定义在 package-deb.yml（手动触发同一个 workflow）。
+    # 发行版包在目标发行版自己的容器里构建，job 定义在 package-deb.yml（那个 workflow 也能单独手动触发）。
     # 列表第一个发行版顺带产出 qingjian-data。
     # 只放人工在真机上装过的发行版：debian-13 / debian-sid 的构建是通的，验过再往这里加（逗号分隔）。
     uses: ./.github/workflows/package-deb.yml
     with:
       distros: ubuntu-26.04
+      # 与其它平台一致：构建标签指向的那个提交，不是手动触发时的 main 顶端
+      ref: ${{ needs.prepare.outputs.tag }}
 
   linux-deb-upload:
     needs: [prepare, linux-deb]
@@ -329,9 +372,11 @@ jobs:
       actions: read
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.prepare.outputs.tag }}
           persist-credentials: false
 
       # 用 runner 自带的 gh 取本次运行的产物，不再多引一个 action（也要多钉一个 commit）。
@@ -361,9 +406,13 @@ jobs:
     runs-on: ubuntu-26.04
     permissions:
       contents: write
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # releases_json.py 要从这个提交的 CHANGELOG.md 取发版说明，得跟被标记的提交一致
+          ref: ${{ needs.prepare.outputs.tag }}
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
@@ -380,13 +429,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
-        run: tools/release/finish-release.sh "$GITHUB_REF_NAME" "$VERSION" "$RUNNER_TEMP/release"
+        run: tools/release/finish-release.sh "$TAG" "$VERSION" "$RUNNER_TEMP/release"
 
       - name: Generate releases.json
         env:
           GH_TOKEN: ${{ github.token }}
           QINGJIAN_INDEX_SIGNING_KEY: ${{ secrets.QINGJIAN_INDEX_SIGNING_KEY }}
-        run: tools/release/publish-releases-json.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/release"
+        run: tools/release/publish-releases-json.sh "$TAG" "$RUNNER_TEMP/release"
 
       - name: Trigger website build
         if: steps.secrets.outputs.website == 'true'

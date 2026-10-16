@@ -3,10 +3,14 @@
 # actions 一律钉到 commit（注释里是对应的标签），Dependabot 每周提 PR 更新；cargo 全加 --locked，Cargo.lock 没提交就报错。
 name: ci
 
+# 调试期改成只手动触发：推代码到 main 与开 PR 都不再自动跑（每推一次就等一遍三个平台，还会因下面的 concurrency
+# 把上一次顶成 cancelled）。需要在 Actions 页选 ci → Run workflow 手动跑，会跑下面全部三个 job。
+# 恢复上游的自动触发：把这一节换回
+#   push:
+#     branches: [main]
+#   pull_request:
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read

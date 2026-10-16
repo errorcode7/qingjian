@@ -19,12 +19,14 @@
    **更新日志手写，不由提交自动生成**：发版前按上个标签以来的 `git log` 起草几条，人审一遍再定稿。
    标题下可以写一行 `网盘：[夸克网盘](链接)`（GitHub 下载不方便的用户用）：它不算更新条目，Release 说明把它放在最前面，`releases.json` 单独输出成 `mirrors`，官网显示成按钮。
    网盘文件在 CI 跑完后手动上传。
-3. 提交，打注释标签并推：`git tag -a v0.1.4 -m "青简 0.1.4" && git push origin main v0.1.4`。
+3. 提交，打注释标签并推：`git tag -a v0.1.4 -m "青简 0.1.4" && git push origin main v0.1.4`。推标签不会自动发版（调试期改成手动触发）：
+   到 Actions 页选 **release** → Run workflow，把 `v0.1.4` 填进 `tag`。各平台 job 检出的是这个标签指向的提交，不是 main 顶端。
 4. 标签推出去之后紧接一个普通提交把版本号改成下一个开发版（`0.1.5-dev`），CHANGELOG 顶上加 `## 0.1.5 · 未发布 · stable`；-dev 版本永远没有标签与 Release。
 
 `release.yml` 的流程：
 
-- `prepare`（`ubuntu-26.04`）：门禁（要打的平台版本号都与标签一致、不带 `-dev`、标签在 main 上、配了索引签名密钥）→ 用 CHANGELOG 那一节加各平台未签名提示建**草稿** Release。
+- `prepare`（`ubuntu-26.04`）：先查 `tag` 输入的那个标签在远程存在（手动触发没有「推标签」这个前置动作）、把它检出，再做门禁
+  （要打的平台版本号都与标签一致、不带 `-dev`、标签指向的提交在 main 上、配了索引签名密钥）→ 用 CHANGELOG 那一节加各平台未签名提示建**草稿** Release。
 - `macos`（`macos-26`）、`windows`（`windows-latest`）、`linux`（`ubuntu-26.04`）并行：下载产品数据 → 打包 → `tools/release/upload-build.sh` 把安装包和
   这个平台的 `SHA256SUMS-<平台>`、`build-info-<平台>.json` 片段传到草稿上。
 - `linux-deb`：复用 `.github/workflows/package-deb.yml`，按 `distros` 列表在各自发行版的容器里各装一遍依赖、各编一次，
@@ -36,7 +38,7 @@
 - `linux-deb-upload`：`linux-deb` 之后跑，用 runner 自带的 `gh run download` 取回容器矩阵的产物，逐个发行版调 `tools/release/upload-build.sh` 传包与摘要片段。
 - `publish`：全部平台都成功才跑，`tools/release/finish-release.sh` 把片段合成一份 `SHA256SUMS` 与 `build-info.json`（各平台构建机记在 `platforms` 里，deb 按发行版另占 `linux-<发行版>` 一条）、删掉片段、草稿转正
   → `publish-releases-json.sh` 生成并签名 `releases.json` → `bump-website.sh` 触发官网构建。
-  任何平台失败，Release 就停在草稿、用户看不到；修好后删掉草稿与标签重推，或在 Actions 页重跑失败的 job。
+  任何平台失败，Release 就停在草稿、用户看不到；修好后删掉草稿与标签，重打标签再手动触发一次，或在 Actions 页重跑失败的 job。
 
 `build-info.json` 顶层的 `commit` / `toolchain` / `data_*` 是整次发布的、不分平台：合并时取第一个**非空**的片段，
 不能按文件名排序取第一份——deb 的片段由不下载产品数据的 job（`linux-deb-upload`）传上来，这几个字段是空的。
@@ -85,13 +87,16 @@ cargo 命令全 `--locked`（含 `bundle.sh` 与 `build.ps1`）。普通 CI 只�
 
 | 文件 | 触发 | 做什么 |
 |---|---|---|
-| `.github/workflows/ci.yml` | push main、PR | Linux 上 `cargo fmt --check` / clippy / test，排除 `qingjian-macos`（IMK 外壳只能在 macOS 编译，macOS runner 计费是 Linux 的 10 倍）；顺带 `bash -n` / `sh -n` 校验 Linux 安装与打包脚本的语法 |
-| `.github/workflows/release.yml` | 推 `v*`（三个平台）或 `macos-v*` / `windows-v*` / `linux-v*`（单平台）标签 | `prepare` 门禁并建草稿 Release → `macos` / `windows` / `linux` 并行打包上传 → `linux-deb` 在容器矩阵里打发行版 deb → `linux-deb-upload` 取回并上传 → `publish` 合并摘要、转正、生成 `releases.json`、触发官网构建（见上文） |
-| `.github/workflows/package-deb.yml` | `release.yml` 调用，或手动 `workflow_dispatch`（填 `distros`，缺省只有已验证的 `ubuntu-26.04`） | 只做 deb：`build` 在容器矩阵里逐发行版构建并跑 `apps/linux/tests/deb.py` 静态验收，`install-test` 再开一个干净的同发行版容器用 `apps/linux/tests/deb-install.sh` 真装一遍又卸掉（解依赖、`postinst` 效果、`ldd`、卸载与 purge），两关都过才算这个发行版通了。手动触发用来在发版前单独验打包（认未验证的 `debian-13` / `debian-sid` 也走这里），产物在本次 run 的 Artifacts 里 |
+| `.github/workflows/ci.yml` | **调试期只手动触发**（Actions 页 Run workflow）；上游是 push main 与 PR | Linux 上 `cargo fmt --check` / clippy / test，排除 `qingjian-macos`（IMK 外壳只能在 macOS 编译，macOS runner 计费是 Linux 的 10 倍）；顺带 `bash -n` / `sh -n` 校验 Linux 安装与打包脚本的语法 |
+| `.github/workflows/release.yml` | **调试期只手动触发**（Actions 页 Run workflow，`tag` 填 `v*` 发三个平台、`macos-v*` / `windows-v*` / `linux-v*` 发单平台，标签得先推到远程）；上游是推这些标签 | `prepare` 门禁并建草稿 Release → `macos` / `windows` / `linux` 并行打包上传 → `linux-deb` 在容器矩阵里打发行版 deb → `linux-deb-upload` 取回并上传 → `publish` 合并摘要、转正、生成 `releases.json`、触发官网构建（见上文） |
+| `.github/workflows/package-deb.yml` | `release.yml` 调用（连 `ref` 一起传，构建标签指向的那个提交），或手动 `workflow_dispatch`（填 `distros`，缺省只有已验证的 `ubuntu-26.04`） | 只做 deb：`build` 在容器矩阵里逐发行版构建并跑 `apps/linux/tests/deb.py` 静态验收，`install-test` 再开一个干净的同发行版容器用 `apps/linux/tests/deb-install.sh` 真装一遍又卸掉（解依赖、`postinst` 效果、`ldd`、卸载与 purge），两关都过才算这个发行版通了。手动触发用来在发版前单独验打包（认未验证的 `debian-13` / `debian-sid` 也走这里），产物在本次 run 的 Artifacts 里 |
 
 手动跑一次 deb 打包（不改版本号、不发 Release）：在 Actions 页选 **package deb** → Run workflow。`distros` 留空只打 Ubuntu 26.04；
 要试别的发行版就把 `distros` 填成 `debian-13` 或 `debian-sid,ubuntu-26.04`（逗号分隔，可选项在 workflow 的 `plan` job 里）。
 构建、静态验收与真装验证都会跑，要看包就去本次 run 的 Artifacts 里下。
+
+发版同理走手动：Actions 页选 **release** → Run workflow，`tag` 填要发的标签。**标签得先推上去**——推标签本身现在什么都不触发，
+workflow 第一步会查它在不在远程。`ci.yml` 与 `release.yml` 的手动触发是调试期的设置，要恢复上游的推送触发，按各自 `on:` 上方的注释改回来。
 
 ## 产品数据从哪来
 

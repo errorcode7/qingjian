@@ -17,6 +17,10 @@ on:
       distros:
         type: string
         default: ubuntu-26.04
+      ref:
+        description: 要构建的提交（发版时由 release.yml 传标签名）；不填就用触发本次运行的那个引用
+        type: string
+        default: ''
       sample:
         description: 只带样例词库（发版时不要开）
         type: boolean
@@ -81,6 +85,8 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # 发版时由 release.yml 指定标签，保证包来自被标记的那个提交；手动触发时不填，检出发起时的引用
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
@@ -144,6 +150,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0

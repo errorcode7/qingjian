@@ -3,14 +3,16 @@
 # 往它的 src/content/upstream.json 写一笔「本次发版的标签 / 文档提交」并推一个提交。
 # 官网构建时拉最新 Release 的 releases.json，文档按记下的提交号拉主仓库 docs/user；只在发版时调用，文档只随发版更新。
 #
-# 用法：tools/release/bump-website.sh（在 release.yml 里跑，读 GITHUB_REF_NAME 标签与 GITHUB_SHA）
+# 用法：tools/release/bump-website.sh（在 release.yml 里跑，读 TAG 标签，没设就退回 GITHUB_REF_NAME）
 # 需要环境变量 QINGJIAN_WEB_TOKEN：对 qingjian-web 有 Contents: write 的 fine-grained PAT。
 set -euo pipefail
 
 token=${QINGJIAN_WEB_TOKEN:?缺 QINGJIAN_WEB_TOKEN}
 repo=${QINGJIAN_WEB_REPO:-qingjian-team/qingjian-web}
-sha=${GITHUB_SHA:-$(git rev-parse HEAD)}
-tag=${GITHUB_REF_NAME:?缺 GITHUB_REF_NAME（版本标签）}
+# 文档提交取检出的 HEAD：手动触发发版时 GITHUB_SHA 是分支顶端，不是被标记的那个提交。
+sha=$(git rev-parse HEAD)
+tag=${TAG:-${GITHUB_REF_NAME:-}}
+: "${tag:?缺 TAG（版本标签）}"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
