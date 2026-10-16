@@ -64,6 +64,8 @@ jobs:
 
   build:
     needs: plan
+    # runs-on 决定宿主，container 决定 job 在哪个容器里跑，两者都要给（缺 runs-on 整个文件不合法）。
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -127,6 +129,7 @@ jobs:
   # 「Depends 写对了没有」才有意义——build 那个容器里 fcitx5 与 -dev 包早就装上了。
   install-test:
     needs: [plan, build]
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
