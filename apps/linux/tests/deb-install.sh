@@ -90,9 +90,16 @@ for path in /usr/lib/*/fcitx5/qingjian.so /usr/share/fcitx5/addon/qingjian.conf 
             /etc/environment.d/50-qingjian-im.conf /usr/share/licenses/qingjian/LICENSE; do
   [[ -e $path ]] || fail "装完少了 $path"
 done
+# 资源根是 /usr/share/qingjian/resources，里面直接是 data/ 与 assets/（运行时 paths::resource_root()
+# 就是这个根，词库再拼 data/generated、模型拼 data/models/<模型>），不是把仓库的 data/ 前缀剥掉。
+resources=/usr/share/qingjian/resources
 if ! $sample; then
-  [[ -e /usr/share/qingjian/resources/dict.qj ]] || fail '数据包没有把词库铺开'
-  [[ -e /usr/share/qingjian/resources/models/hanzhang-zhiwei/hanzhang-zhiwei-small.qjm ]] || fail '数据包没有把整句模型铺开'
+  [[ -e $resources/data/generated/dict.qj ]] || fail '数据包没有把词库铺开'
+  [[ -e $resources/data/generated/lm.qj ]] || fail '数据包没有把语言模型铺开'
+  [[ -e $resources/data/models/hanzhang-zhiwei/hanzhang-zhiwei-small.qjm ]] || fail '数据包没有把含章·知微铺开'
+else
+  # 样例包不带 data/generated，运行时会回落到 assets/sample/dict.tsv（main.rs）。
+  [[ -e $resources/assets/sample/dict.tsv ]] || fail '样例包没有带 assets/sample/dict.tsv'
 fi
 
 # 装完的文件必须与包里的 md5sums 一致，否则是 postinst 或别的什么把包内文件改坏了。

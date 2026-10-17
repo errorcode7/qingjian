@@ -116,11 +116,17 @@ def check_data(package, sample):
         resources = [path for path in files if path.startswith('/usr/share/qingjian/resources/')]
         assert resources, '数据包里没有程序资源'
         assert [path for path in files if path.startswith('/usr/bin/')] == [], '数据包不该装可执行文件'
-        if not sample:
-            names = {Path(path).name for path in resources}
-            for wanted in ('dict.qj', 'lm.qj', 'english.tsv',
-                           'hanzhang-zhiwei-small.qjm', 'hanzhang-tongbian-small.qjm'):
-                assert wanted in names, f'数据包里缺少 {wanted}'
+        # 路径要比对到完整相对位置：资源根下直接是 data/ 与 assets/，运行时按这个布局找
+        # （apps/linux/server/src/paths.rs 的 generated 拼 data/generated，rescore 拼 data/models/<模型>）。
+        # 只看文件名的话，「铺到 resources/dict.qj」这种装上去跑不起来的错位抓不出来。
+        root_prefix = '/usr/share/qingjian/resources/'
+        if sample:
+            assert root_prefix + 'assets/sample/dict.tsv' in files, '样例数据包缺少 assets/sample/dict.tsv'
+        else:
+            for wanted in ('data/generated/dict.qj', 'data/generated/lm.qj', 'data/generated/english.tsv',
+                           'data/models/hanzhang-zhiwei/hanzhang-zhiwei-small.qjm',
+                           'data/models/hanzhang-tongbian/hanzhang-tongbian-small.qjm'):
+                assert root_prefix + wanted in files, f'数据包里缺少 {wanted}'
         return files
 
 
