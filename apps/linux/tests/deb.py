@@ -27,6 +27,20 @@ def png_size(path):
     assert header[:8] == b'\x89PNG\r\n\x1a\n', f'{path} 不是 PNG'
     return struct.unpack('>II', header[16:24])
 
+def check_md5sums(control, files, name):
+    """dpkg -V 只拿包里的 DEBIAN/md5sums 比对磁盘：手搓 deb 不生成这份文件，
+    没它的话「装完文件有没有被改坏」就是空转——所以先在这里确认它存在且覆盖了整个包。"""
+    sums = control / 'md5sums'
+    assert sums.is_file(), f'{name} 没有 DEBIAN/md5sums，装完 dpkg -V 验不出任何东西'
+    listed = {}
+    for line in sums.read_text().splitlines():
+        digest, path = line.split('  ', 1)
+        listed['/' + path] = digest
+    assert set(listed) == set(files), (
+        f'{name} 的 md5sums 与包内文件对不上\n'
+        f'  漏记：{sorted(set(files) - set(listed))[:5]}\n'
+        f'  多记：{sorted(set(listed) - set(files))[:5]}')
+
 def check_order(version):
     """带预发布后缀的版本必须排在同号正式版之前，否则正式版装不上去。"""
     if '~' not in version:
@@ -49,6 +63,7 @@ def check_main(package, sample):
     with tempfile.TemporaryDirectory(prefix='qingjian-deb-') as temporary:
         files = extract(package, Path(temporary) / 'data')
         control = control_area(package, Path(temporary) / 'control')
+        check_md5sums(control, files, 'qingjian')
 
         plugins = [path for path in files if path.endswith('/fcitx5/qingjian.so')]
         assert len(plugins) == 1, f'插件不在 Fcitx5 的 addon 目录里：{plugins}'
@@ -112,6 +127,7 @@ def check_data(package, sample):
     with tempfile.TemporaryDirectory(prefix='qingjian-deb-') as temporary:
         files = extract(package, Path(temporary) / 'data')
         control = control_area(package, Path(temporary) / 'control')
+        check_md5sums(control, files, 'qingjian-data')
         assert not (control / 'postinst').exists(), '数据包不该有 postinst'
         resources = [path for path in files if path.startswith('/usr/share/qingjian/resources/')]
         assert resources, '数据包里没有程序资源'

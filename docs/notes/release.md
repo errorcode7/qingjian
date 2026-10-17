@@ -27,8 +27,10 @@
 
 - `prepare`（`ubuntu-26.04`）：先查 `tag` 输入的那个标签在远程存在（手动触发没有「推标签」这个前置动作）、把它检出，再做门禁
   （要打的平台版本号都与标签一致、不带 `-dev`、标签指向的提交在 main 上、配了索引签名密钥）→ 用 CHANGELOG 那一节加各平台未签名提示建**草稿** Release。
-- `macos`（`macos-26`）、`windows`（`windows-latest`）、`linux`（`ubuntu-26.04`）并行：下载产品数据 → 打包 → `tools/release/upload-build.sh` 把安装包和
-  这个平台的 `SHA256SUMS-<平台>`、`build-info-<平台>.json` 片段传到草稿上。
+- `macos`（`macos-26`）、`windows`（`windows-latest`）、`linux-build`（`ubuntu-26.04` / `ubuntu-26.04-arm` 两架构矩阵）并行：
+  下载产品数据 → 打包 → `linux-build` 把 tar 包与 `build-machine.txt` 传成 artifact。
+- `linux-upload`：`linux-build` 之后跑（与 `linux-deb-upload` 同一个理由——`upload-build.sh` 每个平台只写一份
+  `SHA256SUMS-linux` 与 `build-info-linux.json`，两个架构各传一次会互相覆盖），取回两个架构的 tar 包，合成一次传上草稿。
 - `linux-deb`：复用 `.github/workflows/package-deb.yml`，按 `distros` × `archs` 两维矩阵，在每个发行版的容器里各装一遍依赖、各编一次，
   出 `qingjian-<版本>-linux-<发行版>-<cpu>.deb`（amd64 的 cpu 写作 `x86_64`），再在另一个**干净的**同发行版、同架构容器里把包真装一遍又卸掉。
   装不上、`postinst` 没写对输入法列表、卸载留垃圾，这个 reusable workflow 就失败，`linux-deb-upload` 与 `publish` 都不会跑——
@@ -48,7 +50,8 @@
 
 **单平台补丁**（只修一个平台的急事）：只改那个平台的版本号，打 `macos-v<版本>` / `windows-v<版本>` / `linux-v<版本>`，同一套流程只打那一个平台，Release 标题带平台名。
 
-发版后 GitHub Release 上有：`qingjian-<版本>-macos-arm64.pkg`、`-macos-x86_64.pkg`、`-windows-x86_64-setup.exe`、`-linux-x86_64.tar.gz`、
+发版后 GitHub Release 上有：`qingjian-<版本>-macos-arm64.pkg`、`-macos-x86_64.pkg`、`-windows-x86_64-setup.exe`、
+`qingjian-<版本>-linux-x86_64.tar.gz`、`qingjian-<版本>-linux-arm64.tar.gz`、
 `qingjian-<版本>-linux-<发行版>-x86_64.deb`（当前只有 Ubuntu 26.04 一份；`archs` 打开后另有一份 `-arm64.deb`）、`qingjian-data-<版本>-linux-all.deb`、
 `SHA256SUMS`、`build-info.json`、`releases.json` 与 `.sig`。
 
@@ -68,7 +71,9 @@ Rust 工具链由 `rust-toolchain.toml` 钉版本（现在 1.96.0），两个 wo
   Inno Setup 钉 7.1.0（与开发机同版本、钉死 GitHub Release 上的安装程序与哈希）。
 - **Linux**：`apps/linux/scripts/package.sh` 打的包里是编好的 Server、设置程序与 Fcitx5 插件、产品数据压缩包、`install.sh` / `uninstall.sh` / `files.py`，按仓库相对路径放，
   安装与源码安装走同一份清单与校验；打完先装进临时目录冒烟测试（文件齐、校验过、`ldd` 无缺库）再上传。
-  插件链接构建机的 Fcitx5（`build-info.json` 的 `platforms.linux.runner` 记了版本），所以只承诺 Ubuntu 26.04，其他发行版走源码安装。
+  插件链接构建机的 Fcitx5，所以只承诺 Ubuntu 26.04，其他发行版走源码安装。包名里的 `<cpu>` 取构建机的 `uname -m`，
+  但 arm 上 `uname` 给的是 `aarch64`，包里统一写成 `arm64`（下载页与更新器认的是这个名字，`qingjian-update` 的 `target.rs` 也吐 `arm64`）。
+  两个架构各在自己的 runner 上编，产物由 `linux-upload` 合成一次上传，`build-info.json` 的 `platforms.linux.runner` 会记上两台构建机的版本。
 - **Linux deb**：`apps/linux/scripts/package-deb.sh` 出 `qingjian`（系统级安装、随会话自动启动）与 `qingjian-data`（词库与模型，`Architecture: all`）两个包，
   文件清单与用户目录安装共用 `files.py plan`；落位、依赖与图标八档由 `apps/linux/tests/deb.py` 验收，也可 `--sample` 跳过正式数据快速跑通链路。
   因为插件与构建机的 Fcitx5 绑定，deb 只能在**目标发行版自己的环境**里编（非把 Ubuntu 26.04 的包往下兼容）；又因为 `bin/` 下是构建机
@@ -92,7 +97,7 @@ cargo 命令全 `--locked`（含 `bundle.sh` 与 `build.ps1`）。普通 CI 只�
 | 文件 | 触发 | 做什么 |
 |---|---|---|
 | `.github/workflows/ci.yml` | **调试期只手动触发**（Actions 页 Run workflow）；上游是 push main 与 PR | Linux 上 `cargo fmt --check` / clippy / test，排除 `qingjian-macos`（IMK 外壳只能在 macOS 编译，macOS runner 计费是 Linux 的 10 倍）；顺带 `bash -n` / `sh -n` 校验 Linux 安装与打包脚本的语法 |
-| `.github/workflows/release.yml` | **调试期只手动触发**（Actions 页 Run workflow，`tag` 填 `v*` 发三个平台、`macos-v*` / `windows-v*` / `linux-v*` 发单平台，标签得先推到远程）；上游是推这些标签 | `prepare` 门禁并建草稿 Release → `macos` / `windows` / `linux` 并行打包上传 → `linux-deb` 在容器矩阵里打发行版 deb → `linux-deb-upload` 取回并上传 → `publish` 合并摘要、转正、生成 `releases.json`、触发官网构建（见上文） |
+| `.github/workflows/release.yml` | **调试期只手动触发**（Actions 页 Run workflow，`tag` 填 `v*` 发三个平台、`macos-v*` / `windows-v*` / `linux-v*` 发单平台，标签得先推到远程）；上游是推这些标签 | `prepare` 门禁并建草稿 Release → `macos` / `windows` 打包上传，`linux-build` 按两架构矩阵打包 → `linux-upload` 合成上传 → `linux-deb` 在容器矩阵里打发行版 deb → `linux-deb-upload` 取回并上传 → `publish` 合并摘要、转正、生成 `releases.json`、触发官网构建（见上文） |
 | `.github/workflows/package-deb.yml` | `release.yml` 调用（连 `ref` 一起传，构建标签指向的那个提交；默认只出 `ubuntu-26.04` + `amd64`），或手动 `workflow_dispatch`（默认 `ubuntu-26.04` + `amd64,arm64`） | 只做 deb：`build` 在「发行版 × 架构」矩阵里逐项构建并跑 `apps/linux/tests/deb.py` 静态验收，`install-test` 再开一个干净的同发行版、同架构容器用 `apps/linux/tests/deb-install.sh` 真装一遍又卸掉（解依赖、`postinst` 效果、`ldd`、卸载与 purge），两关都过才算这一项通了。产物名 `deb-<发行版>-<架构>`。手动触发用来在发版前单独验打包（认未验证的 `debian-13` / `debian-sid` 与 `arm64` 也走这里），产物在本次 run 的 Artifacts 里 |
 
 手动跑一次 deb 打包（不改版本号、不发 Release）：在 Actions 页选 **package deb** → Run workflow。默认按 `ubuntu-26.04` × `amd64,arm64`

@@ -63,7 +63,8 @@ sudo apt install ./qingjian-<版本>-linux-ubuntu-26.04-x86_64.deb ./qingjian-da
 
 ## Fcitx5 预编译包
 
-预编译包在 Ubuntu 26.04（x86_64）上构建，插件与系统的 Fcitx5 版本绑定。Ubuntu 26.04 与 Debian 更推荐上面的 deb（会把会话一起配好）；
+预编译包在 Ubuntu 26.04 上构建，`x86_64` 与 `arm64` 各一份，插件与系统的 Fcitx5 版本绑定（文件名的最后一段就是架构，装之前对一下 `uname -m`：
+arm 机器上是 `aarch64`，对应的包名是 `arm64`）。Ubuntu 26.04 与 Debian 更推荐上面的 deb（会把会话一起配好）；
 其他发行版请用下一节的源码安装。
 先装好 Fcitx5 与 GTK / Qt 输入支持：
 

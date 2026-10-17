@@ -292,13 +292,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: tools/release/upload-build.sh windows "$(powershell -NoProfile -Command '(Get-CimInstance Win32_OperatingSystem).Caption' | tr -d '\r')" target/installer/*.exe
 
-  linux:
+  linux-build:
     needs: prepare
     if: needs.prepare.outputs.linux == 'true'
-    # Fcitx5 插件链接的是构建机上的 Fcitx5，与已验证的 Ubuntu 26.04 一致
-    runs-on: ubuntu-26.04
-    permissions:
-      contents: write
+    # Fcitx5 插件链接的是构建机上的 Fcitx5，与已验证的 Ubuntu 26.04 一致；架构不做交叉编译，
+    # 包里就是构建机编出来的二进制，所以每个架构要自己的宿主 runner。
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-26.04
+          - arch: arm64
+            runner: ubuntu-26.04-arm
+    runs-on: ${{ matrix.runner }}
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       TAG: ${{ needs.prepare.outputs.tag }}
@@ -326,8 +333,9 @@ jobs:
           tools/release/data-fetch.sh
           ls -la data/generated data/generated/dicts data/models/hanzhang-zhiwei data/models/hanzhang-tongbian
 
+      # --arch 是自检：runner 排错到别的架构上时立刻失败，而不是打出一个名不副实的包
       - name: Build package
-        run: apps/linux/scripts/package.sh
+        run: apps/linux/scripts/package.sh --arch ${{ matrix.arch }}
 
       # 装进临时目录再卸载：包里文件齐、校验过得去、两个二进制在这台机器上找得到全部动态库
       - name: Smoke-test package
@@ -344,10 +352,57 @@ jobs:
           ./uninstall.sh --prefix "$work/prefix"
           test ! -e "$work/prefix/bin/qingjian-linux-server"
 
+      # 两个架构的 tar 包要合成一次上传：upload-build.sh 每个平台只写一份 SHA256SUMS-linux 与
+      # build-info-linux.json，各传一次会让后一轮盖掉前一轮。所以这里只出产物，上传留给 linux-upload。
+      - name: Record build machine
+        run: |
+          . /etc/os-release
+          printf '%s %s, Fcitx5 %s\n' "$PRETTY_NAME" "$(dpkg --print-architecture)" "$(pkg-config --modversion Fcitx5Core)" > target/linux-package/build-machine.txt
+          cat target/linux-package/build-machine.txt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-tar-${{ matrix.arch }}
+          path: |
+            target/linux-package/*.tar.gz
+            target/linux-package/build-machine.txt
+          if-no-files-found: error
+
+  linux-upload:
+    needs: [prepare, linux-build]
+    if: needs.prepare.outputs.linux == 'true'
+    # 草稿 Release 只在这里写：容器/矩阵里不装 gh 与 jq 的活留给普通 runner。
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+      # 写下 permissions 会把没列的 scope 置成 none，取本次运行的产物要 actions: read。
+      actions: read
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+
+      # 用 runner 自带的 gh 取本次运行的产物，每个架构落在 target/linux-package/linux-tar-<cpu>/ 下。
+      - name: Download tar artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" --pattern 'linux-tar-*' --dir target/linux-package
+
       - name: Upload to draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: tools/release/upload-build.sh linux "$(. /etc/os-release && echo "$PRETTY_NAME"), Fcitx5 $(pkg-config --modversion Fcitx5Core)" target/linux-package/*.tar.gz
+        run: |
+          files=()
+          runners=''
+          for directory in target/linux-package/linux-tar-*/; do
+            files+=("${directory}"*.tar.gz)
+            runners+="$(cat "${directory}build-machine.txt");"
+          done
+          tools/release/upload-build.sh linux "${runners%;}" "${files[@]}"
 
   linux-deb:
     needs: prepare
@@ -418,7 +473,7 @@ jobs:
           done
 
   publish:
-    needs: [prepare, macos, windows, linux, linux-deb-upload]
+    needs: [prepare, macos, windows, linux-upload, linux-deb-upload]
     # 没选中的平台是 skipped，照样发；有平台失败就停在草稿
     if: ${{ !cancelled() && needs.prepare.result == 'success' && !contains(needs.*.result, 'failure') }}
     runs-on: ubuntu-26.04

@@ -210,6 +210,22 @@ Description: 青简输入法的词库、本地整句模型与程序资源
  emoji 数据。与体系结构无关，各发行版共用同一份。
 EOF
 
+# dpkg -V 是拿包里的 DEBIAN/md5sums 与磁盘上的文件比对：手搓 deb 不会自己生成这份文件，
+# 不写它，「装完之后文件有没有被改坏」就永远验不出来（dpkg -V 直接没得比，一声不响地过）。
+# 条目只列普通文件，路径相对包根、不带前导斜杠；conffiles 也在里面（dpkg 自己也这么记）。
+make_md5sums() {
+  local tree=$1
+  (
+    cd "$tree"
+    find . -path ./DEBIAN -prune -o -type f -print0 \
+      | LC_ALL=C sort -z \
+      | xargs -0 -r md5sum \
+      | sed 's|  \./|  |'
+  ) > "$tree/DEBIAN/md5sums"
+}
+make_md5sums "$main_root"
+make_md5sums "$data_root"
+
 compression=(-Zzstd)
 if ! dpkg-deb --help 2>&1 | grep -qi zstd; then
   compression=(-Zxz)

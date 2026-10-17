@@ -1,13 +1,39 @@
 #!/usr/bin/env bash
 # //! 打预编译包 target/linux-package/qingjian-<版本>-linux-<cpu>.tar.gz：Server、设置程序、Fcitx5 插件、产品数据与安装脚本。
 # //! 先跑 tools/release/data-fetch.sh；包里按仓库相对路径放文件，解开后的 install.sh 与源码安装共用 files.py 的清单与校验。
+# //!
+# //!   apps/linux/scripts/package.sh [--arch x86_64|arm64]
+# //!
+# //! <cpu> 取构建机的 uname -m，但 arm 上 uname 给的是 aarch64，而下载页与更新器认的是 arm64
+# //! （qingjian-update 的 target.rs 也吐 arm64），所以这里做一次映射。--arch 只用来核对构建机架构
+# //! （对不上直接失败），不做交叉编译。
 set -euo pipefail
+
+arch=''
+while (($#)); do
+  case "$1" in
+    --arch) arch=${2:?--arch 需要 cpu 名}; shift 2 ;;
+    --help) echo '用法：package.sh [--arch x86_64|arm64]'; exit 0 ;;
+    *) echo "未知参数：$1" >&2; exit 2 ;;
+  esac
+done
+
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
 cd "$root"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' apps/linux/server/Cargo.toml | head -1)
 if [[ "$version" == *-dev ]]; then
   version+="-$(git rev-parse --short=7 HEAD)"
   git diff --quiet HEAD || version+='+'
+fi
+case "$(uname -m)" in
+  x86_64) cpu=x86_64 ;;
+  aarch64 | arm64) cpu=arm64 ;;
+  *) cpu=$(uname -m) ;;
+esac
+if [[ -n $arch && $arch != "$cpu" ]]; then
+  printf '构建机是 %s，不能打成 %s：包里的二进制是构建机的架构。\n要 %s 的包，就在那个架构的机器上跑。\n' \
+    "$cpu" "$arch" "$arch" >&2
+  exit 1
 fi
 tools/release/data-fetch.sh --verify
 [[ -f data/models/hanzhang-zhiwei/hanzhang-zhiwei-small.qjm && -f data/models/hanzhang-tongbian/hanzhang-tongbian-small.qjm && -f data/generated/dict.qj ]] || { echo '缺少产品数据或含章模型，先运行 tools/release/data-fetch.sh' >&2; exit 1; }
@@ -18,7 +44,7 @@ cmake_output="$root/target/fcitx5-package"
 cmake -S apps/linux/fcitx5 -B "$cmake_output" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 cmake --build "$cmake_output" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
 
-name="qingjian-$version-linux-$(uname -m)"
+name="qingjian-$version-linux-$cpu"
 out="$root/target/linux-package"
 stage="$out/$name"
 rm -rf "$stage" "$out/$name.tar.gz"
