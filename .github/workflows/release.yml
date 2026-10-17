@@ -12,14 +12,15 @@
 #   QINGJIAN_NOTARY_KEY          App Store Connect API 密钥 .p8，base64
 #   QINGJIAN_NOTARY_KEY_ID       密钥的 Key ID
 #   QINGJIAN_NOTARY_ISSUER       密钥的 Issuer ID
-# 版本索引的签名（必须，没配门禁直接失败）：
+# 版本索引的签名（默认必须，没配密钥门禁直接失败；调试流水线可在 Run workflow 里把 sign_index 关掉，产物不带 .sig）：
 #   QINGJIAN_INDEX_SIGNING_KEY   releases.json 的 ed25519 私钥（base64 的 32 字节，tools/release-sign keygen 生成），
 #                                公钥在 crates/qingjian-update/src/index/signature.rs；软件内检查更新只认签过名的索引
 # 发版后让官网重新构建（也可选）：
 #   QINGJIAN_WEB_TOKEN           fine-grained PAT，对 qingjian-team/qingjian-web 有 Contents: read and write
 #                                （官网由 Cloudflare 按仓库提交自动构建，tools/release/bump-website.sh 往那边推一个小提交）
 #
-# 门禁：版本号与标签一致且不带 -dev；标签指向的提交必须在 main 上（防止从没合并的分支或手滑的本地提交发版）。
+# 门禁：版本号与标签一致且不带 -dev；标签指向的提交必须在 main 上（防止从没合并的分支或手滑的本地提交发版）；
+# 默认还要求配了索引签名密钥（把 sign_index 关掉可跳过，只用于调试，会在 run 上留一条警告）。
 # Secrets 不放 workflow 顶层 env，只注入真正用它的那一步；有没有配由第一步算成输出（secrets 不能直接写在 if 里）。
 # actions 钉到 commit（注释是对应标签），Dependabot 每周更新；产品数据与本地整句模型按 tools/release/data.lock 钉住的 data-vN Release 下载、按锁文件里的哈希校验，标签与哈希记进 build-info.json。
 name: release
@@ -37,6 +38,10 @@ on:
         description: 要发的标签，形如 v0.2.2 或 linux-v0.2.2（必须已推到远程，且指向 main 上的提交）
         type: string
         required: true
+      sign_index:
+        description: 给 releases.json 签名（只在调试流水线时关掉：关掉后没有 .sig，客户端会当成查不到更新）
+        type: boolean
+        default: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -52,6 +57,7 @@ jobs:
       macos: ${{ steps.gate.outputs.macos }}
       windows: ${{ steps.gate.outputs.windows }}
       linux: ${{ steps.gate.outputs.linux }}
+      sign_index: ${{ steps.gate.outputs.sign_index }}
     steps:
       # 标签得先在远程存在，checkout 才检得出它。手动触发没有「推标签」这个前置动作，所以先查一次给出人话提示。
       - name: Check tag exists
@@ -79,11 +85,19 @@ jobs:
         id: gate
         env:
           TAG: ${{ inputs.tag }}
+          SIGN_INDEX: ${{ inputs.sign_index }}
           INDEX_KEY_SET: ${{ secrets.QINGJIAN_INDEX_SIGNING_KEY != '' }}
         run: |
-          if [[ "$INDEX_KEY_SET" != "true" ]]; then
+          # 默认要求签名：索引没 .sig 时客户端会当成「查不到更新」。调试流水线可以显式关掉，
+          # 但那不是可发版的状态，所以关掉时打一条 annotation 警告，别让人忘了打开。
+          SIGN_INDEX="${SIGN_INDEX:-true}"
+          if [[ "$SIGN_INDEX" == "true" && "$INDEX_KEY_SET" != "true" ]]; then
             echo "没配 QINGJIAN_INDEX_SIGNING_KEY：releases.json 签不了名，已装的青简都不认这份索引、收不到更新提示（docs/notes/release.md）" >&2
+            echo "只是调试流水线、不需要更新提示能用：把 Sign index 关掉重跑，产物不带 .sig，会打警告。" >&2
             exit 1
+          fi
+          if [[ "$SIGN_INDEX" != "true" ]]; then
+            echo "::warning::本次关闭了 releases.json 签名：产物没有 .sig，客户端会当成查不到更新。只用于调试，不要这样发正式版。"
           fi
           case "$TAG" in
             v*) PLATFORMS="macos windows linux"; VERSION="${TAG#v}" ;;
@@ -115,6 +129,7 @@ jobs:
             [[ " $PLATFORMS " == *" $platform "* ]] && on=true || on=false
             echo "$platform=$on" >> "$GITHUB_OUTPUT"
           done
+          echo "sign_index=$SIGN_INDEX" >> "$GITHUB_OUTPUT"
 
       - name: Create draft release
         env:
@@ -510,6 +525,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           QINGJIAN_INDEX_SIGNING_KEY: ${{ secrets.QINGJIAN_INDEX_SIGNING_KEY }}
+          SIGN_INDEX: ${{ needs.prepare.outputs.sign_index }}
         run: tools/release/publish-releases-json.sh "$TAG" "$RUNNER_TEMP/release"
 
       - name: Trigger website build

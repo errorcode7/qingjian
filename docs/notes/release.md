@@ -26,7 +26,7 @@
 `release.yml` 的流程：
 
 - `prepare`（`ubuntu-26.04`）：先查 `tag` 输入的那个标签在远程存在（手动触发没有「推标签」这个前置动作）、把它检出，再做门禁
-  （要打的平台版本号都与标签一致、不带 `-dev`、标签指向的提交在 main 上、配了索引签名密钥）→ 用 CHANGELOG 那一节加各平台未签名提示建**草稿** Release。
+  （要打的平台版本号都与标签一致、不带 `-dev`、标签指向的提交在 main 上、配了索引签名密钥——调试时可把 `sign_index` 关掉绕过最后一条）→ 用 CHANGELOG 那一节加各平台未签名提示建**草稿** Release。
 - `macos`（`macos-26`）、`windows`（`windows-latest`）、`linux-build`（`ubuntu-26.04` / `ubuntu-26.04-arm` 两架构矩阵）并行：
   下载产品数据 → 打包 → `linux-build` 把 tar 包与 `build-machine.txt` 传成 artifact。
 - `linux-upload`：`linux-build` 之后跑（与 `linux-deb-upload` 同一个理由——`upload-build.sh` 每个平台只写一份
@@ -42,7 +42,7 @@
 - `linux-deb-upload`：`linux-deb` 之后跑，用 runner 自带的 `gh run download` 取回容器矩阵的产物，先按发行版把各架构的包合成一份
   （`upload-build.sh` 每个平台只写一份 `SHA256SUMS-<平台>`，按架构各调一次会互相覆盖），再逐个发行版调 `tools/release/upload-build.sh` 传包与摘要片段。
 - `publish`：全部平台都成功才跑，`tools/release/finish-release.sh` 把片段合成一份 `SHA256SUMS` 与 `build-info.json`（各平台构建机记在 `platforms` 里，deb 按发行版另占 `linux-<发行版>` 一条）、删掉片段、草稿转正
-  → `publish-releases-json.sh` 生成并签名 `releases.json` → `bump-website.sh` 触发官网构建。
+  → `publish-releases-json.sh` 生成 `releases.json` 并签名（`sign_index` 关掉时跳过签名，只挂不带 `.sig` 的 json）→ `bump-website.sh` 触发官网构建。
   任何平台失败，Release 就停在草稿、用户看不到；修好后删掉草稿与标签，重打标签再手动触发一次，或在 Actions 页重跑失败的 job。
 
 `build-info.json` 顶层的 `commit` / `toolchain` / `data_*` 是整次发布的、不分平台：合并时取第一个**非空**的片段，
@@ -97,7 +97,7 @@ cargo 命令全 `--locked`（含 `bundle.sh` 与 `build.ps1`）。普通 CI 只�
 | 文件 | 触发 | 做什么 |
 |---|---|---|
 | `.github/workflows/ci.yml` | **调试期只手动触发**（Actions 页 Run workflow）；上游是 push main 与 PR | Linux 上 `cargo fmt --check` / clippy / test，排除 `qingjian-macos`（IMK 外壳只能在 macOS 编译，macOS runner 计费是 Linux 的 10 倍）；顺带 `bash -n` / `sh -n` 校验 Linux 安装与打包脚本的语法 |
-| `.github/workflows/release.yml` | **调试期只手动触发**（Actions 页 Run workflow，`tag` 填 `v*` 发三个平台、`macos-v*` / `windows-v*` / `linux-v*` 发单平台，标签得先推到远程）；上游是推这些标签 | `prepare` 门禁并建草稿 Release → `macos` / `windows` 打包上传，`linux-build` 按两架构矩阵打包 → `linux-upload` 合成上传 → `linux-deb` 在容器矩阵里打发行版 deb → `linux-deb-upload` 取回并上传 → `publish` 合并摘要、转正、生成 `releases.json`、触发官网构建（见上文） |
+| `.github/workflows/release.yml` | **调试期只手动触发**（Actions 页 Run workflow，`tag` 填 `v*` 发三个平台、`macos-v*` / `windows-v*` / `linux-v*` 发单平台，标签得先推到远程；`sign_index` 默认开着，调试可关掉跳过索引签名）；上游是推这些标签 | `prepare` 门禁并建草稿 Release → `macos` / `windows` 打包上传，`linux-build` 按两架构矩阵打包 → `linux-upload` 合成上传 → `linux-deb` 在容器矩阵里打发行版 deb → `linux-deb-upload` 取回并上传 → `publish` 合并摘要、转正、生成 `releases.json`、触发官网构建（见上文） |
 | `.github/workflows/package-deb.yml` | `release.yml` 调用（连 `ref` 一起传，构建标签指向的那个提交；默认 `ubuntu-26.04` + `amd64,arm64`），或手动 `workflow_dispatch`（同一组默认值） | 只做 deb：`build` 在「发行版 × 架构」矩阵里逐项构建并跑 `apps/linux/tests/deb.py` 静态验收，`install-test` 再开一个干净的同发行版、同架构容器用 `apps/linux/tests/deb-install.sh` 真装一遍又卸掉（解依赖、`postinst` 效果、`ldd`、卸载与 purge），两关都过才算这一项通了。产物目录 `deb-<发行版>-<deb 架构名>`（`amd64` / `arm64`）。手动触发用来在发版前单独验打包（认未验证的 `debian-13` / `debian-sid` 与 `arm64` 也走这里），产物在本次 run 的 Artifacts 里 |
 
 手动跑一次 deb 打包（不改版本号、不发 Release）：在 Actions 页选 **package deb** → Run workflow。默认按 `ubuntu-26.04` × `amd64,arm64`
@@ -132,6 +132,9 @@ workflow 第一步会查它在不在远程。`ci.yml` 与 `release.yml` 的手�
 两个文件一起挂到本次 Release 与 GitHub latest；官网构建时原样拷到 `https://qingjian.app/releases.json` 与 `.sig`。
 
 - 私钥是仓库 Secret `QINGJIAN_INDEX_SIGNING_KEY`（base64 的 32 字节）；没配时 `release.yml` 的门禁直接失败。维护者本机留一份在 `~/.config/qingjian/index-signing.key`（不进仓库）。
+- 调试流水线可以不管这把钥：手动触发时把 **Sign index** 关掉，`prepare` 放行、`publish-releases-json.sh` 跳过签名，
+  产物只有 `releases.json`、没有 `.sig`。此时客户端会当成查不到更新，所以**这个状态不能用来发正式版**，
+  `prepare` 会在 run 上留一条 `::warning::` 提示。默认值仍是开着，不传就等于要签名。
 - 换钥：`cargo run -p qingjian-release-sign -- keygen --out <新文件>`，把打印的公钥加进 `crates/qingjian-update/src/index/signature.rs` 的 `PUBLIC_KEYS`（新旧并列），
   发一两个版本后再换 Secret、去掉旧公钥。直接换 Secret 会让所有已装版本收不到更新。
 - 改了 CHANGELOG 后用 `publish-releases-json.sh` 重刷索引同样要带这个环境变量。
