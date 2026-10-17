@@ -103,8 +103,11 @@ else
 fi
 
 # 装完的文件必须与包里的 md5sums 一致，否则是 postinst 或别的什么把包内文件改坏了。
-if ! drift=$(dpkg -V qingjian); then fail 'dpkg -V 跑不起来'; fi
-[[ -z $drift ]] || fail "包内文件与校验和不符：$drift"
+# 两个包都要验：数据包一样可能被别的东西（dpkg 之外的脚本、用户手改）动过。
+for package in qingjian qingjian-data; do
+  if ! drift=$(dpkg -V "$package"); then fail "dpkg -V $package 跑不起来"; fi
+  [[ -z $drift ]] || fail "$package 的包内文件与校验和不符：$drift"
+done
 
 # 插件的库靠 Depends 拉进来，缺一个就是「装上了却加载不了」。
 for binary in /usr/bin/qingjian-linux-server /usr/bin/qingjian-settings /usr/lib/*/fcitx5/qingjian.so; do
