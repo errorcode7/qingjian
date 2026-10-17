@@ -41,7 +41,7 @@ on:
         type: string
         default: ubuntu-26.04
       archs:
-        description: 要构建的架构，逗号分隔（amd64 / arm64；arm64 编得出来，但还没在真机上装过）
+        description: 要构建的架构，逗号分隔（amd64 或 x86_64、arm64 或 aarch64 都认，内部按 deb 名归一）
         type: string
         default: amd64,arm64
       sample:
@@ -58,7 +58,7 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.value }}
       carrier: ${{ steps.matrix.outputs.carrier }}
-      carrier_arch: ${{ steps.matrix.outputs.carrier_arch }}
+      carrier_deb_arch: ${{ steps.matrix.outputs.carrier_deb_arch }}
     steps:
       - id: matrix
         env:
@@ -67,7 +67,7 @@ jobs:
         run: |
           include='[]'
           carrier=''
-          carrier_arch=''
+          carrier_deb_arch=''
           for distro in ${DISTROS//,/ }; do
             case "$distro" in
               ubuntu-26.04) image=ubuntu:26.04 ;;
@@ -75,23 +75,26 @@ jobs:
               debian-sid) image=debian:sid ;;
               *) echo "不支持的发行版：$distro" >&2; exit 1 ;;
             esac
-            for arch in ${ARCHS//,/ }; do
+            # deb_arch 是 dpkg 的名（amd64 / arm64）：它进控制区的 Architecture 与产物目录名；
+            # 文件名最后一段是 cpu 名（x86_64 / arm64），由 package-deb.sh 从 uname -m 映射出来。
+            # 输入两套写法都收（x86_64 / aarch64 也认），先归一成 deb 名，产物目录才不会被拼成两种。
+            for deb_arch in ${ARCHS//,/ }; do
               # 不交叉编译：宿主架构必须就是目标架构，容器再由这个宿主的 docker 拉目标发行版。
-              case "$arch" in
-                amd64) runner=ubuntu-26.04 ;;
-                arm64) runner=ubuntu-26.04-arm ;;
-                *) echo "不支持的架构：$arch（只支持 amd64 / arm64）" >&2; exit 1 ;;
+              case "$deb_arch" in
+                amd64 | x86_64) deb_arch=amd64; runner=ubuntu-26.04 ;;
+                arm64 | aarch64) deb_arch=arm64; runner=ubuntu-26.04-arm ;;
+                *) echo "不支持的架构：$deb_arch（只认 amd64/x86_64 与 arm64/aarch64）" >&2; exit 1 ;;
               esac
-              include=$(jq -c --arg distro "$distro" --arg image "$image" --arg arch "$arch" --arg runner "$runner" \
-                '. + [{distro: $distro, image: $image, arch: $arch, runner: $runner}]' <<< "$include")
+              include=$(jq -c --arg distro "$distro" --arg image "$image" --arg deb_arch "$deb_arch" --arg runner "$runner" \
+                '. + [{distro: $distro, image: $image, deb_arch: $deb_arch, runner: $runner}]' <<< "$include")
               # 数据包与架构、发行版都无关，只让矩阵第一项产出，避免几份同名 deb 互相覆盖。
-              if [[ -z "$carrier" ]]; then carrier=$distro; carrier_arch=$arch; fi
+              if [[ -z "$carrier" ]]; then carrier=$distro; carrier_deb_arch=$deb_arch; fi
             done
           done
           [[ -n "$carrier" ]] || { echo '发行版与架构都要给，否则矩阵是空的' >&2; exit 1; }
           echo "value={\"include\":$include}" >> "$GITHUB_OUTPUT"
           echo "carrier=$carrier" >> "$GITHUB_OUTPUT"
-          echo "carrier_arch=$carrier_arch" >> "$GITHUB_OUTPUT"
+          echo "carrier_deb_arch=$carrier_deb_arch" >> "$GITHUB_OUTPUT"
 
   build:
     needs: plan
@@ -133,7 +136,7 @@ jobs:
       # amd64 与 arm64 的目标文件更是完全不能混。
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: ${{ matrix.distro }}-${{ matrix.arch }}
+          key: ${{ matrix.distro }}-${{ matrix.deb_arch }}
 
       - name: Install build and packaging dependencies
         run: |
@@ -150,7 +153,7 @@ jobs:
       # --arch 是自检不是交叉编译：宿主架构若与矩阵不符（arm64 的 runner 没排上、退回 x64），
       # 这里立刻失败，而不是安静地打出一个标着 arm64 的 x64 包。
       - name: Build deb
-        run: apps/linux/scripts/package-deb.sh --distro ${{ matrix.distro }} --arch ${{ matrix.arch }} ${{ inputs.sample && '--sample' || '' }}
+        run: apps/linux/scripts/package-deb.sh --distro ${{ matrix.distro }} --arch ${{ matrix.deb_arch }} ${{ inputs.sample && '--sample' || '' }}
 
       - name: Verify deb
         run: python3 apps/linux/tests/deb.py target/deb/out ${{ inputs.sample && '--sample' || '' }}
@@ -161,14 +164,14 @@ jobs:
           printf '%s %s, Fcitx5 %s\n' "$PRETTY_NAME" "$(dpkg --print-architecture)" "$(pkg-config --modversion Fcitx5Core)" > target/deb/out/build-machine.txt
           cat target/deb/out/build-machine.txt
           # 数据包与架构、发行版都无关：整张矩阵只让第一项产出，不然同名 deb 会撞在一起。
-          if [[ "${{ matrix.distro }}" == "${{ needs.plan.outputs.carrier }}" ]] && [[ "${{ matrix.arch }}" == "${{ needs.plan.outputs.carrier_arch }}" ]]; then
+          if [[ "${{ matrix.distro }}" == "${{ needs.plan.outputs.carrier }}" ]] && [[ "${{ matrix.deb_arch }}" == "${{ needs.plan.outputs.carrier_deb_arch }}" ]]; then
             touch target/deb/out/ships-data
           fi
 
       # 产物名必须带架构：矩阵里 amd64 与 arm64 是两条腿，同名 artifact 会互相覆盖。
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: deb-${{ matrix.distro }}-${{ matrix.arch }}
+          name: deb-${{ matrix.distro }}-${{ matrix.deb_arch }}
           path: target/deb/out/
           if-no-files-found: error
 
@@ -201,7 +204,7 @@ jobs:
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: deb-${{ matrix.distro }}-${{ matrix.arch }}
+          name: deb-${{ matrix.distro }}-${{ matrix.deb_arch }}
           path: target/deb/out
 
       - name: Install and verify

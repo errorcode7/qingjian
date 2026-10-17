@@ -12,6 +12,11 @@
 # //!
 # //! 一次只出构建机自己的体系结构：bin/ 下的二进制就是这台机器编的，--arch 只用来声明并核对
 # //! （对不上直接失败），不做交叉编译；与体系结构无关的 qingjian-data 固定是 Architecture: all。
+# //!
+# //! 架构名有两套写法，别混：控制区的 Architecture 与包名的最后一段不是一回事——
+# //!   deb 名（dpkg 用，写进控制区、也是产物目录名）  amd64 / arm64
+# //!   cpu 名（文件名、下载页、更新器认这套）          x86_64 / arm64
+# //! --arch 两套都收，下面统一成 deb 名再核对，所以包名里的 x86_64 与控制区的 amd64 是一台机器。
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
@@ -20,18 +25,19 @@ cd "$root"
 maintainer='青简 <cherrypeel@mewpaz.com>'
 homepage=https://qingjian.app
 distro=''
-requested_arch=''
+requested_deb_arch=''
 requested_version=''
 sample=false
 build=true
 while (($#)); do
   case "$1" in
     --distro) distro=${2:?--distro 需要发行版标识}; shift 2 ;;
-    --arch) requested_arch=${2:?--arch 需要 deb 架构名}; shift 2 ;;
+    --arch) requested_deb_arch=${2:?--arch 需要架构名}; shift 2 ;;
     --version) requested_version=${2:?--version 需要版本号}; shift 2 ;;
     --sample) sample=true; shift ;;
     --no-build) build=false; shift ;;
-    --help) echo '用法：package-deb.sh [--distro ubuntu-26.04] [--arch amd64] [--version 0.2.2] [--sample] [--no-build]'; exit 0 ;;
+    --help) echo '用法：package-deb.sh [--distro ubuntu-26.04] [--arch amd64|arm64] [--version 0.2.2] [--sample] [--no-build]
+--arch 也收 cpu 名（x86_64 / aarch64），内部换成 deb 名再与构建机核对'; exit 0 ;;
     *) echo "未知参数：$1" >&2; exit 2 ;;
   esac
 done
@@ -68,9 +74,15 @@ deb_version=${version//-/\~}
 
 # 只出构建机自己的架构：bin/ 下的二进制就是这台机器编的，标成别的架构会装出问题。
 deb_arch=$(dpkg --print-architecture)
-if [[ -n $requested_arch && $requested_arch != "$deb_arch" ]]; then
+# --arch 两套写法都收，先归一成 deb 名再比。同一个参数名在 package.sh 里收的是 cpu 名，
+# 这里收 deb 名——不归一就等着写错：arm 机器上填 arm64 侥幸能对，x86 上填 x86_64 就被拒。
+case "$requested_deb_arch" in
+  x86_64 | amd64) requested_deb_arch=amd64 ;;
+  aarch64 | arm64) requested_deb_arch=arm64 ;;
+esac
+if [[ -n $requested_deb_arch && $requested_deb_arch != "$deb_arch" ]]; then
   printf '构建机是 %s，不能打成 %s：包里的二进制是构建机的架构。\n要 %s 的包，就在那个架构的机器或容器里跑。\n' \
-    "$deb_arch" "$requested_arch" "$requested_arch" >&2
+    "$deb_arch" "$requested_deb_arch" "$requested_deb_arch" >&2
   exit 1
 fi
 case "$(uname -m)" in

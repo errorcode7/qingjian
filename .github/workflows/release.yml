@@ -297,13 +297,15 @@ jobs:
     if: needs.prepare.outputs.linux == 'true'
     # Fcitx5 插件链接的是构建机上的 Fcitx5，与已验证的 Ubuntu 26.04 一致；架构不做交叉编译，
     # 包里就是构建机编出来的二进制，所以每个架构要自己的宿主 runner。
+    # cpu 名（x86_64 / arm64）：tar 包文件名与下载页用这套；deb 那边用的是 dpkg 的 amd64，
+    # 两者不是一回事，键名分开写省得在 workflow 里猜。
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: x86_64
+          - cpu: x86_64
             runner: ubuntu-26.04
-          - arch: arm64
+          - cpu: arm64
             runner: ubuntu-26.04-arm
     runs-on: ${{ matrix.runner }}
     env:
@@ -335,7 +337,7 @@ jobs:
 
       # --arch 是自检：runner 排错到别的架构上时立刻失败，而不是打出一个名不副实的包
       - name: Build package
-        run: apps/linux/scripts/package.sh --arch ${{ matrix.arch }}
+        run: apps/linux/scripts/package.sh --arch ${{ matrix.cpu }}
 
       # 装进临时目录再卸载：包里文件齐、校验过得去、两个二进制在这台机器上找得到全部动态库
       - name: Smoke-test package
@@ -362,7 +364,7 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: linux-tar-${{ matrix.arch }}
+          name: linux-tar-${{ matrix.cpu }}
           path: |
             target/linux-package/*.tar.gz
             target/linux-package/build-machine.txt

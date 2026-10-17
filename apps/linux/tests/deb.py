@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # //! 发行版包（deb）验收：控制区字段与依赖、文件落位与权限、图标尺寸、清单与 files.py 一致。
 # //! 用法：deb.py [--sample] <deb 或装 deb 的目录>…
+import re
 import struct
 import subprocess
 import sys
@@ -8,6 +9,33 @@ import tempfile
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[3]
+
+# 架构名有两套写法，包名与 Architecture 字段各用一套，这里把对应关系写死：
+#   文件名 / 下载页 / 更新器（qingjian-update 的 target.rs）：x86_64、arm64
+#   dpkg 的 Architecture 字段：amd64、arm64
+# 少一层映射就会出一个「名字是 x86_64、装到 arm 机器上」或者反过来的包。
+CPU_TO_ARCH = {'x86_64': 'amd64', 'arm64': 'arm64'}
+# qingjian-<版本>-linux-<发行版>-<cpu>.deb 与 qingjian-data-<版本>-linux-all.deb，版本段自己也可能带 -
+NAME = re.compile(r'^qingjian-(?:data-)?(?P<version>.+?)-linux-(?P<rest>.+)$')
+
+def check_name(package):
+    """包名里的版本与架构段必须与控制区字段对应，别让「文件名说一套、包里写一套」发出去。"""
+    stem = package.name.removesuffix('.deb')
+    match = NAME.match(stem)
+    assert match, f'{package.name} 不符合 qingjian-<版本>-linux-<发行版>-<cpu>.deb'
+    version = field(package, 'Version')
+    # 控制区把 - 换成 ~（deb 的修订号分隔符，保证预发布排在同号正式版之前），文件名保留原样。
+    assert version.replace('~', '-') == match['version'], (
+        f'{package.name} 的版本段是 {match["version"]}，包里写的是 {version}')
+    return match['rest']
+
+def check_arch(package, rest):
+    """文件名最后一段是 cpu 名，控制区是 dpkg 名，两者必须对得上。"""
+    cpu = rest.split('-')[-1]
+    assert cpu in CPU_TO_ARCH, f'{package.name} 的架构段是 {cpu!r}：文件名只认 {sorted(CPU_TO_ARCH)}（aarch64 要写成 arm64）'
+    architecture = field(package, 'Architecture')
+    assert architecture == CPU_TO_ARCH[cpu], (
+        f'{package.name} 的名字写着 {cpu}，Architecture 却是 {architecture}，应为 {CPU_TO_ARCH[cpu]}')
 
 def field(package, name):
     return subprocess.run(['dpkg-deb', '-f', str(package), name], capture_output=True, text=True, check=True).stdout.strip()
@@ -53,6 +81,7 @@ def check_main(package, sample):
     version = field(package, 'Version')
     assert field(package, 'Package') == 'qingjian'
     assert field(package, 'Architecture') not in ('all', ''), '本体包不能是体系结构无关的'
+    check_arch(package, check_name(package))
     depends = field(package, 'Depends')
     # 只声明 libfcitx5core7 这类库依赖时，用户装上了也没有 Fcitx5 框架可用（没有任何输入法）。
     assert 'fcitx5' in [item.split()[0] for item in depends.split(',')], f'Depends 里没有硬依赖 fcitx5：{depends}'
@@ -123,6 +152,8 @@ def check_data(package, sample):
     assert field(package, 'Package') == 'qingjian-data'
     # 与体系结构无关，各发行版共用同一份。
     assert field(package, 'Architecture') == 'all', '数据包应当是与体系结构无关的'
+    # 名字里也得不带架构：带成 -arm64.deb 会让下载页以为它只装得上 arm。
+    assert check_name(package) == 'all', f'数据包的架构段应当写作 all：{package.name}'
     check_order(version)
     with tempfile.TemporaryDirectory(prefix='qingjian-deb-') as temporary:
         files = extract(package, Path(temporary) / 'data')

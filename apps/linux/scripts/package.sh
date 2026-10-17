@@ -6,14 +6,16 @@
 # //!
 # //! <cpu> 取构建机的 uname -m，但 arm 上 uname 给的是 aarch64，而下载页与更新器认的是 arm64
 # //! （qingjian-update 的 target.rs 也吐 arm64），所以这里做一次映射。--arch 只用来核对构建机架构
-# //! （对不上直接失败），不做交叉编译。
+# //! （对不上直接失败），不做交叉编译。--arch 也收 deb 名（amd64 / arm64），内部换成 cpu 名再核，
+# //! 与 package-deb.sh 的 --arch 保持一致：两个脚本各写各的值域，正是最容易打错包的地方。
 set -euo pipefail
 
-arch=''
+requested_cpu=''
 while (($#)); do
   case "$1" in
-    --arch) arch=${2:?--arch 需要 cpu 名}; shift 2 ;;
-    --help) echo '用法：package.sh [--arch x86_64|arm64]'; exit 0 ;;
+    --arch) requested_cpu=${2:?--arch 需要架构名}; shift 2 ;;
+    --help) echo '用法：package.sh [--arch x86_64|arm64]
+--arch 也收 deb 名（amd64），内部换成 cpu 名再与构建机核对'; exit 0 ;;
     *) echo "未知参数：$1" >&2; exit 2 ;;
   esac
 done
@@ -30,9 +32,14 @@ case "$(uname -m)" in
   aarch64 | arm64) cpu=arm64 ;;
   *) cpu=$(uname -m) ;;
 esac
-if [[ -n $arch && $arch != "$cpu" ]]; then
+# --arch 收两套写法：cpu 名（文件名用）与 deb 名（dpkg 用）。归一成 cpu 名再比。
+case "$requested_cpu" in
+  amd64 | x86_64) requested_cpu=x86_64 ;;
+  aarch64 | arm64) requested_cpu=arm64 ;;
+esac
+if [[ -n $requested_cpu && $requested_cpu != "$cpu" ]]; then
   printf '构建机是 %s，不能打成 %s：包里的二进制是构建机的架构。\n要 %s 的包，就在那个架构的机器上跑。\n' \
-    "$cpu" "$arch" "$arch" >&2
+    "$cpu" "$requested_cpu" "$requested_cpu" >&2
   exit 1
 fi
 tools/release/data-fetch.sh --verify

@@ -92,9 +92,19 @@ ImageMagick；不要把 1024px 源图塞进尺寸目录，也不要只装 `resou
   `/etc/environment.d/50-qingjian-im.conf`（`XMODIFIERS` / `QT_IM_MODULE` / `QT_IM_MODULES`）与 `/etc/xdg/autostart/` 下 Fcitx5、青简后端两个 desktop 项。
 - `qingjian-data-<版本>-linux-all.deb`（`qingjian-data`，`Architecture: all`）：词库、两份含章模型与 `/usr/share/qingjian/resources/`，各发行版共用一份。
 
-文件名里的 `<cpu>` 取构建机的 `uname -m`（`x86_64` / `arm64`），`Architecture` 字段取 `dpkg --print-architecture`（`amd64` / `arm64`）——
-两套写法在 arm 上正好同名，amd64 上一个是 `x86_64`、一个是 `amd64`。不做交叉编译：`--arch` 只核对构建机架构，对不上直接失败，
-要另一个架构的包就在那个架构的机器或容器里跑（CI 里 `amd64` 用 `ubuntu-26.04`，`arm64` 用 `ubuntu-26.04-arm`）。
+架构名有两套写法，各自用在哪里必须分清——混用会打出「名字说 x86_64、装到 arm 机器上」这种包：
+
+| 写法 | 取值 | 用在哪 |
+|---|---|---|
+| cpu 名 | `x86_64` / `arm64` | 文件名最后一段（下载页、更新器 `qingjian-update` 的 `target.rs` 都认这套） |
+| deb 名 | `amd64` / `arm64` | 控制区的 `Architecture`、`dpkg --print-architecture`、CI 产物目录 `deb-<发行版>-<deb 名>` |
+
+两个打包脚本的 `--arch` 都收这两套写法，内部归一后再与构建机核对：`package-deb.sh` 归到 deb 名（比 `dpkg --print-architecture`），
+`package.sh` 归到 cpu 名（比 `uname -m` 映射）。所以 `--arch x86_64` 与 `--arch amd64` 等价，`aarch64` 也能直接写。
+
+不做交叉编译：`--arch` 只核对构建机架构，对不上直接失败，要另一个架构的包就在那个架构的机器或容器里跑
+（CI 里 `amd64` 用 `ubuntu-26.04`，`arm64` 用 `ubuntu-26.04-arm`）。`deb.py` 会把文件名里的 cpu 段与控制区的 `Architecture`
+按一张固定映射表对上（`x86_64 → amd64`、`arm64 → arm64`），对不上就验收失败，不靠人眼。
 
 文件清单不另写一份：与用户目录安装共用 `files.py plan`（输出「目标路径 → 源文件」），两条路径装的文件集合不会漂移，
 `apps/linux/tests/deb.py` 就把包内文件集合与 `plan` 的输出对起来查，任一侧多出或少掉都报错。
