@@ -77,6 +77,10 @@ jobs:
     container:
       image: ${{ matrix.image }}
     timeout-minutes: 60
+    # 容器 job 的默认 shell 是 sh（宿主上才是 bash），内联的 run 块里有 [[ ]]，得显式钉住。
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Install git and apt prerequisites
         run: |
@@ -88,6 +92,11 @@ jobs:
           # 发版时由 release.yml 指定标签，保证包来自被标记的那个提交；手动触发时不填，检出发起时的引用
           ref: ${{ inputs.ref }}
           persist-credentials: false
+
+      # 工作区目录是宿主 runner 建的（属主不是容器里的 root），git 会以 dubious ownership 拒绝读仓库；
+      # 开发版号要读提交号，不声明 safe.directory 就直接 exit 128。
+      - name: Mark workspace as safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
@@ -142,6 +151,10 @@ jobs:
     container:
       image: ${{ matrix.image }}
     timeout-minutes: 30
+    # 同上：容器 job 的默认 shell 是 sh。
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Install apt prerequisites
         run: |

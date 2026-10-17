@@ -54,7 +54,12 @@ else
   version=$(sed -n 's/^version = "\(.*\)"/\1/p' apps/linux/server/Cargo.toml | head -1)
   [[ -n $version ]] || { echo '读不到 apps/linux/server/Cargo.toml 的版本号' >&2; exit 1; }
   if [[ $version == *-dev ]]; then
-    version+="-$(git rev-parse --short=7 HEAD)"
+    commit=$(git rev-parse --short=7 HEAD 2>/dev/null) || {
+      echo '读不到 git 提交号：开发版号要缀提交号才排得进 deb 的版本顺序。' >&2
+      echo '工作区属主不是当前用户时 git 会以 dubious ownership 拒绝，先 git config --global --add safe.directory <仓库目录>；也可以用 --version 直接指定版本号。' >&2
+      exit 1
+    }
+    version+="-$commit"
     git diff --quiet HEAD || version+='+'
   fi
 fi
