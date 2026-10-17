@@ -19,8 +19,9 @@ CHANGELOG.md 的格式（一个版本一节，日期与发布渠道写在标题�
 渠道只能是 alpha / beta / rc / stable，是**更新渠道**：定期发的版本标 stable，中间放给测试者的版本标 alpha / beta / rc，
 版本号带对应的预发布后缀（`0.1.4-beta.1`）。api-json 是 `gh api repos/<repo>/releases --paginate` 的输出（数组）。
 只取 tag 形如 [平台-]v<版本> 的非草稿发布（平台前缀可选：macos- / windows- / linux-，各平台壳版本号独立），安装包按文件名识别平台与架构，其他附件（SHA256SUMS、build-info.json、releases.json 本身）不列。
-Linux 的 deb 每个发行版一份，发行版标识写在 distro 里（`qingjian-<版本>-linux-ubuntu-26.04-x86_64.deb`），
-与体系结构无关的数据包是 cpu=`all` 的另一条（`qingjian-data-<版本>-linux-all.deb`）——官网下载页要把它跟本体包一起给出，
+Linux 的 deb 每个发行版、每个架构各一份，发行版标识写在 distro 里（`qingjian-<版本>-linux-ubuntu-26.04-x86_64.deb`、
+`qingjian-<版本>-linux-ubuntu-26.04-arm64.deb`），与体系结构无关的数据包是 cpu=`all` 的另一条
+（`qingjian-data-<版本>-linux-all.deb`）——官网下载页要按 distro + cpu 挑对那一份，并把数据包跟本体包一起给出，
 否则 `apt install` 解不开 qingjian-data 这个依赖。
 meta-dir 下每个 tag 一个目录，放那次发布的 SHA256SUMS（每个包的 sha256）与 build-info.json（提交哈希、构建时间、工具链），
 没有就对应字段留空。输出结构与官网 src/lib/releases.ts 的 Release / Asset 类型对应：
@@ -68,9 +69,13 @@ ASSET_KINDS = [
     (re.compile(r"^qingjian-.+-macos-x86_64\.pkg$"), "macos", "Intel", "x86_64"),
     (re.compile(r"^qingjian-.+-windows-x86_64-setup\.exe$"), "windows", "x64", "x86_64"),
     (re.compile(r"^qingjian-.+-linux-x86_64\.tar\.gz$"), "linux", "x64", "x86_64"),
+    # tar 包目前只在 x64 上出，这条先备着：等 release.yml 的 linux job 接上 arm 机器再用。
+    (re.compile(r"^qingjian-.+-linux-arm64\.tar\.gz$"), "linux", "arm64", "arm64"),
     # 发行版包：Fcitx5 插件与构建机绑定，一个发行版一份，文件名里带发行版标识
     # （qingjian-<版本>-linux-ubuntu-26.04-x86_64.deb），distro 单独输出给官网挑版本用。
+    # 架构按构建机的 uname -m 命名（x86_64 / arm64），与 dpkg 的 amd64 / arm64 是两套写法。
     (re.compile(r"^qingjian-.+-linux-(?P<distro>[a-z][a-z0-9.-]*)-x86_64\.deb$"), "linux", "x64", "x86_64"),
+    (re.compile(r"^qingjian-.+-linux-(?P<distro>[a-z][a-z0-9.-]*)-arm64\.deb$"), "linux", "arm64", "arm64"),
     # 数据包（词库、本地整句模型与程序资源）：与体系结构无关，各发行版共用一份，
     # 官网要跟本体包一起给出下载入口，否则 apt 解不开依赖。
     (re.compile(r"^qingjian-data-.+-linux-all\.deb$"), "linux", "通用", "all"),

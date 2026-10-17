@@ -8,15 +8,24 @@ name: package-deb
 # 必须在目标发行版自己的容器里构建：Fcitx5 插件链接的是构建机的 Fcitx5，跨发行版不通用，
 # dpkg-shlibdeps 会顺手把这份绑定写成 Depends；构建最低 API 是 5.1.8，Ubuntu 24.04 自带的
 # 5.1.7 不满足，所以不在列表里。
-# 列表里第一个发行版顺带产出 qingjian-data（与体系结构无关，各发行版内容相同，挂一份就够）。
+# 列表里第一项（第一个发行版 × 第一个架构）顺带产出 qingjian-data（与体系结构无关，各发行版内容相同，挂一份就够）。
 # 默认只出人工验证过的 Ubuntu 26.04：debian-13 / debian-sid 的容器构建是通的，但装到真机还没人验过。
 # 要挂到 Release 上，先手动触发本 workflow 构建出来、在真机上装过，再加进 release.yml 的列表。
+#
+# 矩阵是「发行版 × 架构」两维。架构不做交叉编译：bin/ 下的二进制就是构建机自己编的，插件又绑着构建机的
+# Fcitx5，所以每个架构用自己的宿主 runner（x64 用 ubuntu-26.04，arm64 用 ubuntu-26.04-arm），容器仍是
+# 目标发行版的官方镜像——Docker Hub 上的 ubuntu:26.04 是多架构 manifest，arm 宿主会拉到 arm64 变体。
+# 架构默认也只出 amd64：arm64 编得出来，但还没人在真机上装过。两种触发方式的默认值故意不同——
+# 手动触发（调试）默认把 amd64,arm64 都跑一遍，就是为了验 arm；发版（workflow_call）只出验过的 amd64。
 on:
   workflow_call:
     inputs:
       distros:
         type: string
         default: ubuntu-26.04
+      archs:
+        type: string
+        default: amd64
       ref:
         description: 要构建的提交（发版时由 release.yml 传标签名）；不填就用触发本次运行的那个引用
         type: string
@@ -31,6 +40,10 @@ on:
         description: 要构建的发行版，逗号分隔（已验证 ubuntu-26.04；待验证 debian-13 / debian-sid）
         type: string
         default: ubuntu-26.04
+      archs:
+        description: 要构建的架构，逗号分隔（amd64 / arm64；arm64 编得出来，但还没在真机上装过）
+        type: string
+        default: amd64,arm64
       sample:
         description: 只带样例词库，不下载 90 MB 产品数据
         type: boolean
@@ -45,13 +58,16 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.value }}
       carrier: ${{ steps.matrix.outputs.carrier }}
+      carrier_arch: ${{ steps.matrix.outputs.carrier_arch }}
     steps:
       - id: matrix
         env:
           DISTROS: ${{ inputs.distros }}
+          ARCHS: ${{ inputs.archs }}
         run: |
           include='[]'
           carrier=''
+          carrier_arch=''
           for distro in ${DISTROS//,/ }; do
             case "$distro" in
               ubuntu-26.04) image=ubuntu:26.04 ;;
@@ -59,17 +75,28 @@ jobs:
               debian-sid) image=debian:sid ;;
               *) echo "不支持的发行版：$distro" >&2; exit 1 ;;
             esac
-            include=$(jq -c --arg distro "$distro" --arg image "$image" '. + [{distro: $distro, image: $image}]' <<< "$include")
-            [[ -n "$carrier" ]] || carrier=$distro
+            for arch in ${ARCHS//,/ }; do
+              # 不交叉编译：宿主架构必须就是目标架构，容器再由这个宿主的 docker 拉目标发行版。
+              case "$arch" in
+                amd64) runner=ubuntu-26.04 ;;
+                arm64) runner=ubuntu-26.04-arm ;;
+                *) echo "不支持的架构：$arch（只支持 amd64 / arm64）" >&2; exit 1 ;;
+              esac
+              include=$(jq -c --arg distro "$distro" --arg image "$image" --arg arch "$arch" --arg runner "$runner" \
+                '. + [{distro: $distro, image: $image, arch: $arch, runner: $runner}]' <<< "$include")
+              # 数据包与架构、发行版都无关，只让矩阵第一项产出，避免几份同名 deb 互相覆盖。
+              if [[ -z "$carrier" ]]; then carrier=$distro; carrier_arch=$arch; fi
+            done
           done
-          [[ -n "$carrier" ]] || { echo '至少要给一个发行版' >&2; exit 1; }
+          [[ -n "$carrier" ]] || { echo '发行版与架构都要给，否则矩阵是空的' >&2; exit 1; }
           echo "value={\"include\":$include}" >> "$GITHUB_OUTPUT"
           echo "carrier=$carrier" >> "$GITHUB_OUTPUT"
+          echo "carrier_arch=$carrier_arch" >> "$GITHUB_OUTPUT"
 
   build:
     needs: plan
-    # runs-on 决定宿主，container 决定 job 在哪个容器里跑，两者都要给（缺 runs-on 整个文件不合法）。
-    runs-on: ubuntu-26.04
+    # runs-on 决定宿主（架构由它决定，不交叉编译），container 决定 job 在哪个容器里跑，两者都要给（缺 runs-on 整个文件不合法）。
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -102,10 +129,11 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      # 缓存按发行版分开：几个发行版共用一份 target/ 会拿到别的 libc 与别的 Fcitx5 编出来的产物。
+      # 缓存按发行版与架构分开：几个发行版共用一份 target/ 会拿到别的 libc 与别的 Fcitx5 编出来的产物，
+      # amd64 与 arm64 的目标文件更是完全不能混。
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: ${{ matrix.distro }}
+          key: ${{ matrix.distro }}-${{ matrix.arch }}
 
       - name: Install build and packaging dependencies
         run: |
@@ -119,8 +147,10 @@ jobs:
           tools/release/data-fetch.sh
           ls -la data/generated data/models/hanzhang-zhiwei data/models/hanzhang-tongbian
 
+      # --arch 是自检不是交叉编译：宿主架构若与矩阵不符（arm64 的 runner 没排上、退回 x64），
+      # 这里立刻失败，而不是安静地打出一个标着 arm64 的 x64 包。
       - name: Build deb
-        run: apps/linux/scripts/package-deb.sh --distro ${{ matrix.distro }} ${{ inputs.sample && '--sample' || '' }}
+        run: apps/linux/scripts/package-deb.sh --distro ${{ matrix.distro }} --arch ${{ matrix.arch }} ${{ inputs.sample && '--sample' || '' }}
 
       - name: Verify deb
         run: python3 apps/linux/tests/deb.py target/deb/out ${{ inputs.sample && '--sample' || '' }}
@@ -128,15 +158,17 @@ jobs:
       - name: Record build machine
         run: |
           . /etc/os-release
-          printf '%s, Fcitx5 %s\n' "$PRETTY_NAME" "$(pkg-config --modversion Fcitx5Core)" > target/deb/out/build-machine.txt
+          printf '%s %s, Fcitx5 %s\n' "$PRETTY_NAME" "$(dpkg --print-architecture)" "$(pkg-config --modversion Fcitx5Core)" > target/deb/out/build-machine.txt
           cat target/deb/out/build-machine.txt
-          if [[ "${{ matrix.distro }}" == "${{ needs.plan.outputs.carrier }}" ]]; then
+          # 数据包与架构、发行版都无关：整张矩阵只让第一项产出，不然同名 deb 会撞在一起。
+          if [[ "${{ matrix.distro }}" == "${{ needs.plan.outputs.carrier }}" ]] && [[ "${{ matrix.arch }}" == "${{ needs.plan.outputs.carrier_arch }}" ]]; then
             touch target/deb/out/ships-data
           fi
 
+      # 产物名必须带架构：矩阵里 amd64 与 arm64 是两条腿，同名 artifact 会互相覆盖。
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: deb-${{ matrix.distro }}
+          name: deb-${{ matrix.distro }}-${{ matrix.arch }}
           path: target/deb/out/
           if-no-files-found: error
 
@@ -144,7 +176,8 @@ jobs:
   # 「Depends 写对了没有」才有意义——build 那个容器里 fcitx5 与 -dev 包早就装上了。
   install-test:
     needs: [plan, build]
-    runs-on: ubuntu-26.04
+    # 与 build 同架构的宿主：deb 里是那个架构的二进制，装到别的架构上连 apt 都不会开始。
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -168,7 +201,7 @@ jobs:
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: deb-${{ matrix.distro }}
+          name: deb-${{ matrix.distro }}-${{ matrix.arch }}
           path: target/deb/out
 
       - name: Install and verify

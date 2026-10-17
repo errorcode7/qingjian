@@ -353,11 +353,14 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.linux == 'true'
     # 发行版包在目标发行版自己的容器里构建，job 定义在 package-deb.yml（那个 workflow 也能单独手动触发）。
-    # 列表第一个发行版顺带产出 qingjian-data。
+    # 矩阵是「发行版 × 架构」，第一项（第一个发行版 × 第一个架构）顺带产出 qingjian-data。
     # 只放人工在真机上装过的发行版：debian-13 / debian-sid 的构建是通的，验过再往这里加（逗号分隔）。
     uses: ./.github/workflows/package-deb.yml
     with:
       distros: ubuntu-26.04
+      # amd64 已在真机验过；arm64 编得出来、装得上（CI 里验过），但还没人在 arm 真机用过。
+      # 要一起发就把这里写成 amd64,arm64。
+      archs: amd64
       # 与其它平台一致：构建标签指向的那个提交，不是手动触发时的 main 顶端
       ref: ${{ needs.prepare.outputs.tag }}
 
@@ -380,7 +383,7 @@ jobs:
           persist-credentials: false
 
       # 用 runner 自带的 gh 取本次运行的产物，不再多引一个 action（也要多钉一个 commit）。
-      # 每个产物落在 target/deb/deb-<发行版>/ 下。
+      # 每个产物落在 target/deb/deb-<发行版>-<架构>/ 下。
       - name: Download deb artifacts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -390,13 +393,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for directory in target/deb/deb-*/; do
-            distro="$(basename "${directory%/}")"
-            distro="${distro#deb-}"
-            files=("${directory}qingjian-$VERSION-linux-$distro-"*.deb)
-            # 词库与模型各发行版内容相同，只挂一份，避免 SHA256SUMS 里同名文件出现两个摘要。
-            [[ -e "${directory}ships-data" ]] && files+=("${directory}qingjian-data-"*.deb)
-            tools/release/upload-build.sh "linux-$distro" "$(cat "${directory}build-machine.txt")" "${files[@]}"
+          work=target/deb
+          # 同一个发行版的所有架构必须合成一次上传：upload-build.sh 每个平台只写一份 SHA256SUMS-<平台>
+          # 与 build-info-<平台>.json，按架构各调一次会让后一轮把前一轮的摘要盖掉。
+          for directory in "$work"/deb-*/; do
+            name=$(basename "${directory%/}")
+            arch=${name##*-}
+            distro=${name#deb-}
+            distro=${distro%-"$arch"}
+            mkdir -p "$work/dist-$distro"
+            cp "${directory}"qingjian-"$VERSION"-linux-"$distro"-*.deb "$work/dist-$distro/"
+            cat "${directory}build-machine.txt" >> "$work/build-machine-$distro.txt"
+            # 词库与模型与架构、发行版都无关，只挂一份，避免 SHA256SUMS 里同名文件出现两个摘要。
+            if [[ -e ${directory}ships-data ]]; then
+              cp "${directory}"qingjian-data-*.deb "$work/dist-$distro/"
+            fi
+          done
+
+          for directory in "$work"/dist-*/; do
+            distro=$(basename "${directory%/}")
+            distro=${distro#dist-}
+            runners=$(tr '\n' ';' < "$work/build-machine-$distro.txt" | sed 's/;$//')
+            tools/release/upload-build.sh "linux-$distro" "$runners" "${directory}"*.deb
           done
 
   publish:
