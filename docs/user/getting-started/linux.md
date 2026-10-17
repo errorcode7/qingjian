@@ -40,15 +40,16 @@ Fcitx4 的 Chrome 输入框可读取 X11 中当前应用的选中文字；部分
 
 deb 装到系统目录，并把 Fcitx5 与青简后端接进桌面会话；装完注销重登一次就能用，不用自己启动服务。
 
-在[下载页](https://qingjian.app/download)按自己的发行版与架构下载两个包：`qingjian-<版本>-linux-<发行版>-x86_64.deb` 与
-`qingjian-data-<版本>-linux-all.deb`（词库与本地整句模型，与发行版、架构都无关，只装一份）。两个包要一起装，否则 `qingjian-data` 这个依赖解不开：
+在[下载页](https://qingjian.app/download)按自己的发行版与架构下载两个包：`qingjian-<版本>-linux-<发行版>-<cpu>.deb`
+（`<cpu>` 是 `x86_64` 或 `arm64`）与 `qingjian-data-<版本>-linux-all.deb`（词库与本地整句模型，与发行版、架构都无关，只装一份）。
+两个包要一起装，否则 `qingjian-data` 这个依赖解不开：
 
 ```sh
 sudo apt install ./qingjian-<版本>-linux-ubuntu-26.04-x86_64.deb ./qingjian-data-<版本>-linux-all.deb
 ```
 
-现在只提供 Ubuntu 26.04（x86_64）：插件与构建机上的 Fcitx5 版本绑定，装错发行版的那份，青简不会出现在输入法列表里；
-架构装错 apt 会直接拒装。arm64 的包流水线里已经编得出来、也装得上，但还没人在 arm 真机上用过，所以暂不随发版提供。
+现在只提供 Ubuntu 26.04，`x86_64` 与 `arm64` 各一份：插件与构建机上的 Fcitx5 版本绑定，装错发行版的那份，青简不会出现在输入法列表里；
+架构装错 apt 会直接拒装（arm 机器上 `uname -m` 是 `aarch64`，对应的包名写的是 `arm64`）。
 其他发行版还没在真机上验过，请用下面的源码安装。apt 会连带装上 Fcitx5 和框架依赖。
 
 装完**注销并重新登录**：输入法环境变量（`XMODIFIERS`、`QT_IM_MODULE`）只能在会话启动时注入，Wayland 下无法即时生效。

@@ -15,8 +15,8 @@ name: package-deb
 # 矩阵是「发行版 × 架构」两维。架构不做交叉编译：bin/ 下的二进制就是构建机自己编的，插件又绑着构建机的
 # Fcitx5，所以每个架构用自己的宿主 runner（x64 用 ubuntu-26.04，arm64 用 ubuntu-26.04-arm），容器仍是
 # 目标发行版的官方镜像——Docker Hub 上的 ubuntu:26.04 是多架构 manifest，arm 宿主会拉到 arm64 变体。
-# 架构默认也只出 amd64：arm64 编得出来，但还没人在真机上装过。两种触发方式的默认值故意不同——
-# 手动触发（调试）默认把 amd64,arm64 都跑一遍，就是为了验 arm；发版（workflow_call）只出验过的 amd64。
+# 架构默认 amd64,arm64，两种触发方式一致：arm64 的包在干净的 26.04 容器里真装真卸过（含 dpkg -V），
+# 发版也随 Ubuntu 26.04 一起出。只要 x86 就在 archs 里写 amd64。
 on:
   workflow_call:
     inputs:
@@ -25,7 +25,7 @@ on:
         default: ubuntu-26.04
       archs:
         type: string
-        default: amd64
+        default: amd64,arm64
       ref:
         description: 要构建的提交（发版时由 release.yml 传标签名）；不填就用触发本次运行的那个引用
         type: string

@@ -413,9 +413,9 @@ jobs:
     uses: ./.github/workflows/package-deb.yml
     with:
       distros: ubuntu-26.04
-      # amd64 已在真机验过；arm64 编得出来、装得上（CI 里验过），但还没人在 arm 真机用过。
-      # 要一起发就把这里写成 amd64,arm64。
-      archs: amd64
+      # amd64 与 arm64 都发：arm64 包在干净的 26.04 容器里真装真卸过（含 dpkg -V），
+      # 但还没人在 arm 真机上长期用过——真机报问题就把这里收回 amd64。
+      archs: amd64,arm64
       # 与其它平台一致：构建标签指向的那个提交，不是手动触发时的 main 顶端
       ref: ${{ needs.prepare.outputs.tag }}
 

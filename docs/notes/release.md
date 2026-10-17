@@ -34,8 +34,8 @@
 - `linux-deb`：复用 `.github/workflows/package-deb.yml`，按 `distros` × `archs` 两维矩阵，在每个发行版的容器里各装一遍依赖、各编一次，
   出 `qingjian-<版本>-linux-<发行版>-<cpu>.deb`（amd64 的 cpu 写作 `x86_64`），再在另一个**干净的**同发行版、同架构容器里把包真装一遍又卸掉。
   装不上、`postinst` 没写对输入法列表、卸载留垃圾，这个 reusable workflow 就失败，`linux-deb-upload` 与 `publish` 都不会跑——
-  装不了的包发不出去。两个维度都**只放人工在真机上验过的**：发行版现在只有 Ubuntu 26.04（debian-13 / debian-sid 的构建是通的，
-  但还没人验过安装），架构现在只有 amd64（arm64 在 CI 里编得出、装得上，但没人在 arm 真机上用过）。
+  装不了的包发不出去。两个维度都**只放验过的**：发行版现在只有 Ubuntu 26.04（debian-13 / debian-sid 的构建是通的，
+  但还没人验过安装），架构是 amd64 与 arm64（arm64 在干净的 26.04 容器里真装真卸过，真机还没长期跑过）。
   矩阵第一项（第一个发行版 × 第一个架构）顺带出与体系结构无关的 `qingjian-data-<版本>-linux-all.deb`，
   其余项只留标记——同一个 data 包挂多份会让 `SHA256SUMS` 出现同名两条摘要。
   架构不做交叉编译：宿主 runner 就是目标架构（`ubuntu-26.04` / `ubuntu-26.04-arm`），容器再拉对应架构的发行版镜像。
@@ -52,7 +52,7 @@
 
 发版后 GitHub Release 上有：`qingjian-<版本>-macos-arm64.pkg`、`-macos-x86_64.pkg`、`-windows-x86_64-setup.exe`、
 `qingjian-<版本>-linux-x86_64.tar.gz`、`qingjian-<版本>-linux-arm64.tar.gz`、
-`qingjian-<版本>-linux-<发行版>-x86_64.deb`（当前只有 Ubuntu 26.04 一份；`archs` 打开后另有一份 `-arm64.deb`）、`qingjian-data-<版本>-linux-all.deb`、
+`qingjian-<版本>-linux-<发行版>-x86_64.deb` 与 `-arm64.deb`（当前只有 Ubuntu 26.04，两个架构各一份）、`qingjian-data-<版本>-linux-all.deb`、
 `SHA256SUMS`、`build-info.json`、`releases.json` 与 `.sig`。
 
 官网由 Cloudflare Workers Builds 按官网仓库的提交自动构建，没有可调用的构建钩子，所以主仓库靠**往官网仓库推一个小提交**来触发：
@@ -98,11 +98,10 @@ cargo 命令全 `--locked`（含 `bundle.sh` 与 `build.ps1`）。普通 CI 只�
 |---|---|---|
 | `.github/workflows/ci.yml` | **调试期只手动触发**（Actions 页 Run workflow）；上游是 push main 与 PR | Linux 上 `cargo fmt --check` / clippy / test，排除 `qingjian-macos`（IMK 外壳只能在 macOS 编译，macOS runner 计费是 Linux 的 10 倍）；顺带 `bash -n` / `sh -n` 校验 Linux 安装与打包脚本的语法 |
 | `.github/workflows/release.yml` | **调试期只手动触发**（Actions 页 Run workflow，`tag` 填 `v*` 发三个平台、`macos-v*` / `windows-v*` / `linux-v*` 发单平台，标签得先推到远程）；上游是推这些标签 | `prepare` 门禁并建草稿 Release → `macos` / `windows` 打包上传，`linux-build` 按两架构矩阵打包 → `linux-upload` 合成上传 → `linux-deb` 在容器矩阵里打发行版 deb → `linux-deb-upload` 取回并上传 → `publish` 合并摘要、转正、生成 `releases.json`、触发官网构建（见上文） |
-| `.github/workflows/package-deb.yml` | `release.yml` 调用（连 `ref` 一起传，构建标签指向的那个提交；默认只出 `ubuntu-26.04` + `amd64`），或手动 `workflow_dispatch`（默认 `ubuntu-26.04` + `amd64,arm64`） | 只做 deb：`build` 在「发行版 × 架构」矩阵里逐项构建并跑 `apps/linux/tests/deb.py` 静态验收，`install-test` 再开一个干净的同发行版、同架构容器用 `apps/linux/tests/deb-install.sh` 真装一遍又卸掉（解依赖、`postinst` 效果、`ldd`、卸载与 purge），两关都过才算这一项通了。产物名 `deb-<发行版>-<架构>`。手动触发用来在发版前单独验打包（认未验证的 `debian-13` / `debian-sid` 与 `arm64` 也走这里），产物在本次 run 的 Artifacts 里 |
+| `.github/workflows/package-deb.yml` | `release.yml` 调用（连 `ref` 一起传，构建标签指向的那个提交；默认 `ubuntu-26.04` + `amd64,arm64`），或手动 `workflow_dispatch`（同一组默认值） | 只做 deb：`build` 在「发行版 × 架构」矩阵里逐项构建并跑 `apps/linux/tests/deb.py` 静态验收，`install-test` 再开一个干净的同发行版、同架构容器用 `apps/linux/tests/deb-install.sh` 真装一遍又卸掉（解依赖、`postinst` 效果、`ldd`、卸载与 purge），两关都过才算这一项通了。产物名 `deb-<发行版>-<架构>`。手动触发用来在发版前单独验打包（认未验证的 `debian-13` / `debian-sid` 与 `arm64` 也走这里），产物在本次 run 的 Artifacts 里 |
 
 手动跑一次 deb 打包（不改版本号、不发 Release）：在 Actions 页选 **package deb** → Run workflow。默认按 `ubuntu-26.04` × `amd64,arm64`
-跑两条腿——**手动触发的 `archs` 默认两个都打**，就是为了验 arm；发版走 `workflow_call`，默认只有 `amd64`。
-要试别的发行版就把 `distros` 填成 `debian-13` 或 `debian-sid,ubuntu-26.04`，只打 x86 就把 `archs` 改成 `amd64`
+跑两条腿（发版调用与手动触发用同一组默认值）。要试别的发行版就把 `distros` 填成 `debian-13` 或 `debian-sid,ubuntu-26.04`，只打 x86 就把 `archs` 改成 `amd64`
 （都是逗号分隔，可选项在 workflow 的 `plan` job 里）。
 构建、静态验收与真装验证都会跑，要看包就去本次 run 的 Artifacts 里下。
 
